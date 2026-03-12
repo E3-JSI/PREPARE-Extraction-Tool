@@ -7,6 +7,8 @@ from typing import List, Optional, Sequence, Tuple
 import dateparser
 from sqlmodel import Session, delete, select
 
+import re
+
 from app.library.sentence_segmenter import iter_sentence_spans
 from app.models_db import Dataset, Record, SentenceSegment, SourceTerm
 
@@ -100,13 +102,138 @@ def _term_midpoint(
     return (start + end) / 2.0
 
 
-def _parse_date_value(value: Optional[str]):
+_MULTI_SPACE = re.compile(r"\s+")
+_TRAILING_PUNCT = re.compile(r"[,\.;]+$")
+_DOT_MONTH = re.compile(r"\b([A-Za-zÄŒÅ Å½ÄÅ¡Å¾]{3,})\.(\b|$)")
+_HAS_DIGIT = re.compile(r"\d")
+
+# month/year only: "12/2021", "12-2021", "12.2021"
+_MONTH_YEAR_ONLY = re.compile(r"^\s*\d{1,2}\s*[\/\.-]\s*\d{4}\s*$")
+_YEAR_ONLY = re.compile(r"^\s*(\d{4})\s*$")
+
+# ISO-like: "2021-12-05" or "2021/12/05"
+_ISO_YMD = re.compile(r"^\s*(\d{4})[-/](\d{2})[-/](\d{2})\s*$")
+# DMY-like: "5/10/2002", "05-10-2002", "05.10.2002"
+_DMY_NUMERIC = re.compile(r"^\s*(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})\s*$")
+
+_RELATIVE_WORDS = {"today", "yesterday", "tomorrow", "danes", "vÄeraj", "jutri"}
+_RELATIVE_WORDS_IT = {
+    "oggi",
+    "odierna",
+    "odierno",
+    "ieri",
+    "domani",
+    "anno fa",
+    "anni fa",
+}
+
+
+def _normalize_date_text(s: str) -> str:
+    s = s.strip()
+    s = _TRAILING_PUNCT.sub("", s)           # remove trailing ",", ".", ";"
+    s = _DOT_MONTH.sub(r"\1", s)             # dec. -> dec
+    s = s.replace("â€“", "-").replace("â€”", "-")
+    s = s.replace("\\", "/")
+    s = _MULTI_SPACE.sub(" ", s)
+    return s
+
+
+def _try_parse_iso_ymd(text: str) -> Optional[datetime.datetime]:
+    """
+    Strictly parse YYYY-MM-DD or YYYY/MM/DD to avoid dateparser flipping.
+    """
+    m = _ISO_YMD.match(text)
+    if not m:
+        return None
+    y, mo, d = m.group(1), m.group(2), m.group(3)
+    try:
+        return datetime.datetime(int(y), int(mo), int(d))
+    except ValueError:
+        return None
+
+
+
+def _try_parse_dmy_numeric(text: str) -> Optional[datetime.datetime]:
+    """
+    Parse DMY numeric formats explicitly to avoid month/day flips.
+    """
+    m = _DMY_NUMERIC.match(text)
+    if not m:
+        return None
+    d, mo, y = m.group(1), m.group(2), m.group(3)
+    try:
+        return datetime.datetime(int(y), int(mo), int(d))
+    except ValueError:
+        return None
+
+
+def _parse_date_value(value: Optional[str]) -> Optional[datetime.datetime]:
+    """
+    Fixes:
+    - numeric dates parsed as DMY (05.12.2021 -> 2021-12-05)
+    - ISO formats parsed strictly (2021-12-05 stays 2021-12-05)
+    - blocks relative words (today/yesterday/danes/vÄeraj) to avoid run-date
+    - rejects month/year-only (12/2021) to avoid random day completion
+    - rejects year-only values (2003) because year is not a full date
+    - blocks plain non-numeric words from being interpreted as dates
+    - handles 'dec.' style abbreviations
+    """
     if not value:
         return None
+
+    text = _normalize_date_text(value)
+    if not text:
+        return None
+
+    # Block plain text without any number (e.g. "data odierna").
+    if _HAS_DIGIT.search(text) is None:
+        return None
+
+    lowered = text.lower()
+
+    # 1) Block relative dates
+    if any(w in lowered for w in _RELATIVE_WORDS) or any(
+        w in lowered for w in _RELATIVE_WORDS_IT
+    ):
+        return None
+
+    # 2) Block incomplete month/year-only and year-only.
+    if _MONTH_YEAR_ONLY.match(text) or _YEAR_ONLY.match(text):
+        return None
+
+    # 3) Parse ISO formats strictly first (prevents 2021-12-05 -> 2021-05-12)
+    iso_datetime = _try_parse_iso_ymd(text)
+    if iso_datetime is not None:
+        return iso_datetime
+
+    # 4) Parse DMY numeric explicitly (5/10/2002 -> 5 Oct 2002).
+    dmy_datetime = _try_parse_dmy_numeric(text)
+    if dmy_datetime is not None:
+        return dmy_datetime
+
+    settings = {
+        "DATE_ORDER": "DMY",               # main fix for EU numeric formats
+        "PREFER_DATES_FROM": "past",
+        "RETURN_AS_TIMEZONE_AWARE": False,
+        "STRICT_PARSING": True,
+    }
+
     try:
-        return dateparser.parse(value)
+        parsed = dateparser.parse(
+            text,
+            languages=["sl", "en", "de", "hr", "sr", "ru", "uk", "it"],
+            settings=settings,
+        )
     except Exception:
         return None
+
+    if parsed is None:
+        return None
+
+    if parsed.year < 1900 or parsed.year > 2100:
+        return None
+
+    return parsed
 
 
 def link_dates_for_record(
@@ -171,38 +298,13 @@ def link_dates_for_record(
 
         non_date_terms = [t for t in segment_terms if t.label != date_label]
 
-        valid_dates = [(t, dt) for t, dt in date_terms if dt is not None]
-
-        if len(valid_dates) == 1:
-            date_term, parsed_dt = valid_dates[0]
-            for entity in non_date_terms:
-                # Do not overwrite manually set dates on entities
-                if not getattr(entity, "manual_linked_visit_date", False):
-                    entity.linked_date_term_id = date_term.id
-                    entity.linked_visit_date = parsed_dt
-        elif len(valid_dates) > 1:
-            date_midpoints = {
-                dt_term.id: _term_midpoint(dt_term, segment_lookup)
-                for dt_term, _ in valid_dates
-            }
-            for entity in non_date_terms:
-                entity_mid = _term_midpoint(entity, segment_lookup)
-                closest_term_id = None
-                closest_dt = None
-                closest_distance = None
-                for dt_term, parsed_dt in valid_dates:
-                    mid = date_midpoints[dt_term.id]
-                    distance = abs(entity_mid - mid)
-                    if closest_distance is None or distance < closest_distance:
-                        closest_distance = distance
-                        closest_term_id = dt_term.id
-                        closest_dt = parsed_dt
-                if not getattr(entity, "manual_linked_visit_date", False):
-                    entity.linked_date_term_id = closest_term_id
-                    entity.linked_visit_date = closest_dt
-        else:
-            for entity in non_date_terms:
-                if not getattr(entity, "manual_linked_visit_date", False):
-                    entity.linked_visit_date = fallback_date
+        # Canonical rule:
+        # Non-date terms always use record.visit_date.
+        # If visit_date is missing, linked date stays empty (No date).
+        for entity in non_date_terms:
+            if not getattr(entity, "manual_linked_visit_date", False):
+                entity.linked_date_term_id = None
+                entity.linked_visit_date = fallback_date
 
     db.flush()
+
