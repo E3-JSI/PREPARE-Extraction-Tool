@@ -2,6 +2,10 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import List, Optional
 
+from sqlmodel import SQLModel, Field
+from typing import Optional, Dict, Any
+import json
+
 from sqlalchemy import Column, JSON
 from sqlmodel import SQLModel, Field, Relationship
 
@@ -385,3 +389,50 @@ class SourceToConceptMap(SQLModel, table=True):
     comment: Optional[str] = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TrainingMetric(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+
+    run_id: int
+    epoch: int
+
+    loss: float
+    precision: float
+    recall: float
+    f1: float
+
+
+class TrainingRun(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    dataset_id: int = Field(index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class TrainingEvaluation(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    run_id: int = Field(foreign_key="trainingrun.id")
+
+    precision: float
+    recall: float
+    f1: float
+
+    per_label: dict = Field(sa_column=Column(JSON))
+
+    per_label: dict = Field(sa_column=Column(JSON))
+
+class ModelArtifact(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+
+    run_id: int
+    dataset_id: int
+
+    model_path: str
+    f1_score: float
+    precision: float
+    recall: float
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+

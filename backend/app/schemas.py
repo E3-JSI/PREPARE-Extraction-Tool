@@ -28,6 +28,11 @@ class ExtractionJobStartResponse(BaseModel):
     status: str
 
 
+
+class TrainingRequest(BaseModel):
+    dataset_id: int
+    labels: list[str]
+
 class ExtractionJobStatusResponse(BaseModel):
     """Progress snapshot for a dataset extraction job."""
 
@@ -375,6 +380,8 @@ class SourceTermUpdate(BaseModel):
 
     label: Optional[str] = None
     linked_visit_date: Optional[datetime] = None
+
+
 
 
 class SourceTermOutput(BaseModel):
