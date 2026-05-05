@@ -405,3 +405,94 @@ def run_dataset_extraction_job(job_id: int, dataset_id: int, labels: List[str]):
         job.updated_at = datetime.now(timezone.utc)
         session.add(job)
         session.commit()
+
+
+# ================================================
+# Model Management
+# ================================================
+
+
+@router.post("/models/switch", status_code=status.HTTP_200_OK)
+def switch_model(
+    engine: str,
+    model: str,
+    adapter_model: str | None = None,
+    use_gpu: bool = False,
+):
+    try:
+        payload = {
+            "engine": engine,
+            "model": model,
+            "adapter_model": adapter_model,
+            "use_gpu": use_gpu,
+        }
+        response = requests.post(
+            f"{settings.EXTRACT_HOST}/models/switch",
+            json=payload,
+            timeout=300,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 400:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=e.response.text,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="BioNER service unavailable or returned an error",
+        )
+    except requests.RequestException:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="BioNER service unavailable",
+        )
+
+
+@router.get("/models/current")
+def get_current_model():
+    try:
+        response = requests.get(
+            f"{settings.EXTRACT_HOST}/models/current",
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="BioNER service unavailable",
+        )
+
+
+@router.get("/models/health")
+def check_model_health():
+    try:
+        response = requests.get(
+            f"{settings.EXTRACT_HOST}/models/health",
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="BioNER service unavailable",
+        )
+
+
+@router.get("/models/available")
+def list_available_models():
+    try:
+        response = requests.get(
+            f"{settings.EXTRACT_HOST}/models/available",
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="BioNER service unavailable",
+        )
