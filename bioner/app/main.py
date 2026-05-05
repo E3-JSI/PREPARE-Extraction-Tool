@@ -25,19 +25,19 @@ class NERAPI(ls.LitAPI):
                  model: str | None = None, 
                  adapter_model: str | None = None,
                  prompt_path: str | None = None,
-                 use_gpu: bool = False):
-        super().__init__()
+                 use_gpu: bool = False,
+                 api_path: str = "/ner"):
+        super().__init__(api_path=api_path)
         self.engine = engine
         self.model_path = model
         self.adapter_model = adapter_model
         self.prompt_path = prompt_path
         self.use_gpu = use_gpu
-        self.model_manager = get_model_manager()
 
     def setup(self, device):
         if self.engine and self.model_path:
             try:
-                self.model_manager.switch_model(
+                get_model_manager().switch_model(
                     engine=self.engine,
                     model=self.model_path,
                     adapter_model=self.adapter_model,
@@ -56,7 +56,7 @@ class NERAPI(ls.LitAPI):
         }
 
     def predict(self, inputs: dict) -> dict:
-        model = self.model_manager.get_model()
+        model = get_model_manager().get_model()
         if model is None:
             raise RuntimeError("No model is currently loaded. Use /models/switch to load a model.")
         
@@ -118,9 +118,10 @@ if __name__ == "__main__":
         model=args.model,
         adapter_model=args.adapter_model,
         prompt_path=args.prompt_path,
-        use_gpu=args.use_gpu
+        use_gpu=args.use_gpu,
+        api_path="/ner"
     )
-    server = ls.LitServer(api, accelerator="auto", timeout=300, api_path="/ner")
+    server = ls.LitServer(api, accelerator="auto", timeout=300)
 
     server.app.include_router(model_router)
 
