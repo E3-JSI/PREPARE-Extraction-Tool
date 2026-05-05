@@ -19,6 +19,7 @@ class ModelInfo(BaseModel):
     engine: str
     model_path: str
     adapter_model: Optional[str] = None
+    prompt_path: Optional[str] = None
     use_gpu: bool
     device: Optional[str] = None
     loaded: bool
@@ -36,6 +37,7 @@ class ModelSwitchRequest(BaseModel):
     engine: str
     model: str
     adapter_model: Optional[str] = None
+    prompt_path: Optional[str] = None
     use_gpu: bool = False
 
 

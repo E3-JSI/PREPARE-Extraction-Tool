@@ -35,15 +35,17 @@ class NERAPI(ls.LitAPI):
         self.use_gpu = use_gpu
 
     def setup(self, device):
+        """Setup runs in worker process - load initial model if specified."""
         if self.engine and self.model_path:
             try:
                 get_model_manager().switch_model(
                     engine=self.engine,
                     model=self.model_path,
                     adapter_model=self.adapter_model,
+                    prompt_path=self.prompt_path,
                     use_gpu=self.use_gpu
                 )
-                logging.info(f"Initial model loaded: {self.engine} - {self.model_path}")
+                logging.info(f"Initial model loaded in worker: {self.engine} - {self.model_path}")
             except Exception as e:
                 logging.error(f"Failed to load initial model: {e}")
         else:

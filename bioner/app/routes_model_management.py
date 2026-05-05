@@ -19,6 +19,7 @@ async def switch_model(request: ModelSwitchRequest) -> ModelInfo:
             engine=request.engine,
             model=request.model,
             adapter_model=request.adapter_model,
+            prompt_path=request.prompt_path,
             use_gpu=request.use_gpu
         )
         return model_info

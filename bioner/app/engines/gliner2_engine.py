@@ -23,7 +23,7 @@ class Gliner2Engine(BaseEngine):
         self.model.to(self.device)
 
     def extract_entities(self, medical_text: str, labels: list[str] | dict[str, str]) -> List[Entity]:
-        medical_text_chunks = trim_medical_text(medical_text, max_words=384)
+        medical_text_chunks = trim_medical_text(medical_text, max_words=300)
         all_entities: List[Entity] = []
         global_offset = 0
 
