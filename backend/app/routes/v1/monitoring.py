@@ -245,7 +245,7 @@ async def start_training(
         raise HTTPException(
             422,
             f"Not enough reviewed training examples ({len(training_examples)} found). "
-            "Ensure source terms are clustered and clusters are reviewed.",
+            "Ensure records are marked as reviewed and have extracted source terms with character offsets.",
         )
 
     run = TrainingRun(

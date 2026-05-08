@@ -134,8 +134,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./bioner/models:/models:ro
-      - ./bioner/model:/model:ro
+      - ./bioner/model:/model
     environment:
       - ENGINE=${BIONER_ENGINE?Variable not set}
       - MODEL=${BIONER_MODEL?Variable not set}

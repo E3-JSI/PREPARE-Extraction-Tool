@@ -9,8 +9,18 @@ from typing import Any, Optional
 import torch
 from gliner import GLiNER
 from gliner.data_processing.collator import DataCollator
-from gliner.data_processing.dataset import GLiNERDataset
 from gliner.training import Trainer, TrainingArguments
+from torch.utils.data import Dataset as TorchDataset
+
+
+class _RawDataset(TorchDataset):
+    """Returns raw dicts so DataCollator.collate_raw_batch receives the expected format."""
+    def __init__(self, data: list[dict]):
+        self._data = data
+    def __len__(self) -> int:
+        return len(self._data)
+    def __getitem__(self, idx: int) -> dict:
+        return self._data[idx]
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +106,7 @@ class GLiNERFinetuner:
             "val_size": len(val_data),
         })
 
-        model = GLiNER.from_pretrained(self.base_model_path, local_files_only=True)
+        model = GLiNER.from_pretrained(self.base_model_path, local_files_only=False)
         model = model.to(self.device)
         logger.info(f"GLiNER model loaded on {self.device}: {self.base_model_path}")
 
@@ -104,18 +114,8 @@ class GLiNERFinetuner:
             self._status = "stopped"
             return
 
-        # GLiNER span-based format — NOT IOB
-        train_ds = GLiNERDataset(
-            train_data,
-            config=model.config,
-            tokenizer=model.data_processor.transformer_tokenizer,
-        )
-        eval_ds = GLiNERDataset(
-            val_data,
-            config=model.config,
-            tokenizer=model.data_processor.transformer_tokenizer,
-            entities=train_ds.all_entities,  # share label vocab with train set
-        )
+        train_ds = _RawDataset(train_data)
+        eval_ds = _RawDataset(val_data)
         collator = DataCollator(
             model.config,
             data_processor=model.data_processor,
@@ -131,7 +131,7 @@ class GLiNERFinetuner:
             num_train_epochs=self.num_epochs,
             per_device_train_batch_size=self.train_batch_size,
             learning_rate=self.learning_rate,
-            evaluation_strategy="epoch",
+            eval_strategy="epoch",
             save_strategy="no",
             fp16=False,                    # CPU default; override to True for CUDA
             use_cpu=(self.device == "cpu"),
@@ -156,7 +156,6 @@ class GLiNERFinetuner:
             args=args,
             train_dataset=train_ds,
             eval_dataset=eval_ds,
-            tokenizer=model.data_processor.transformer_tokenizer,
             data_collator=collator,
         )
 
