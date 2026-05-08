@@ -148,23 +148,19 @@ class ModelManager:
             "use_gpu": self._use_gpu,
         }
 
-    def _write_state(self) -> None:
-        """Write state snapshot to file (atomic write)."""
+    def _write_state_dict(self, state: dict) -> None:
+        """Write arbitrary state dict to file atomically."""
         try:
             state_dir = os.path.dirname(self._state_path)
             os.makedirs(state_dir, exist_ok=True)
-            
-            state = self._snapshot()
-            
-            # Atomic write: write to temp file, then rename
+
             temp_fd, temp_path = tempfile.mkstemp(dir=state_dir, text=True)
             try:
                 with os.fdopen(temp_fd, 'w') as f:
                     json.dump(state, f)
                 os.replace(temp_path, self._state_path)
-                # Don't update _last_state_mtime_ns here - let _state_changed() detect it
                 logger.debug(f"State written to {self._state_path}")
-            except Exception as e:
+            except Exception:
                 os.close(temp_fd)
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
@@ -172,6 +168,36 @@ class ModelManager:
         except Exception as e:
             logger.error(f"Failed to write state file: {e}")
             raise
+
+    def _write_state(self) -> None:
+        """Write current model state snapshot to file."""
+        self._write_state_dict(self._snapshot())
+
+    def set_training_active(self, active: bool, pre_training_state: Optional[dict] = None) -> Optional[dict]:
+        """
+        Coordinate model unload/reload around a fine-tuning job.
+
+        active=True:
+            Captures current model state, unloads the inference model, and writes
+            training_active=True to the state file so all LitServe workers free RAM.
+            Returns the captured pre-training state for later restoration.
+
+        active=False:
+            Restores pre_training_state (without training_active) so workers
+            auto-reload the original inference model.
+        """
+        with self._switch_lock:
+            if active:
+                saved = self._snapshot()
+                self._unload_model()
+                self._write_state_dict({**saved, "training_active": True})
+                logger.info("Training active: inference model unloaded, workers notified")
+                return saved
+            else:
+                restore = pre_training_state or self._snapshot()
+                self._write_state_dict(restore)
+                logger.info("Training finished: inference state restored for workers")
+                return None
 
     def _read_state(self) -> Optional[dict]:
         """Read state snapshot from file."""
@@ -232,22 +258,32 @@ class ModelManager:
     def get_model(self) -> Optional[Any]:
         """Get model, auto-reloading if state file changed (worker process)."""
         with self._switch_lock:
-            # Check if external process changed the model config
             if self._state_changed():
                 state = self._read_state()
                 if state:
+                    # Fine-tuning in progress: yield RAM, refuse inference requests
+                    if state.get("training_active"):
+                        if self._model_instance is not None:
+                            self._unload_model()
+                        return None
+
+                    # No model configured (e.g. immediately after training with no prior model)
+                    if not state.get("engine"):
+                        self._unload_model()
+                        return None
+
                     logger.info("State file changed, reloading model in worker")
                     self._unload_model()
-                    
+
                     # Set metadata AFTER unloading (so it doesn't get cleared by _unload_model)
                     self._current_engine = state.get("engine")
                     self._current_model_path = state.get("model")
                     self._current_adapter_model = state.get("adapter_model")
                     self._current_prompt_path = state.get("prompt_path")
                     self._use_gpu = state.get("use_gpu", False)
-                    
+
                     self._load_from_state_file()
-            
+
             return self._model_instance
 
     def get_model_info(self) -> ModelInfo:

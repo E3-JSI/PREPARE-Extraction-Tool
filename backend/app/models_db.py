@@ -407,7 +407,12 @@ class TrainingRun(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
 
     dataset_id: int = Field(index=True)
+    status: str = Field(default="pending", index=True)  # pending|running|completed|failed|stopped
+    base_model: str = Field(default="")
+    labels: list = Field(sa_column=Column(JSON), default_factory=list)
+    output_model_path: Optional[str] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
 
 class TrainingEvaluation(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -417,8 +422,6 @@ class TrainingEvaluation(SQLModel, table=True):
     precision: float
     recall: float
     f1: float
-
-    per_label: dict = Field(sa_column=Column(JSON))
 
     per_label: dict = Field(sa_column=Column(JSON))
 

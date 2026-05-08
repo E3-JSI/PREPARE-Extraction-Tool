@@ -1,122 +1,74 @@
-# app/routes/v1/monitoring.py
 import asyncio
-import json
+import logging
 import os
-import random
-import threading
 import time
+import threading
 from typing import List
-from xml.parsers.expat import model
-from transformers import AutoTokenizer, AutoModelForTokenClassification
-from torch.optim import AdamW
-from gliner import GLiNER
-from seqeval.metrics import classification_report, f1_score, precision_score, recall_score
-from app.models_db import TrainingEvaluation, TrainingRun
-from sqlmodel import select
 
-from transformers import AutoModelForTokenClassification
-from torch.optim import AdamW
-import torch
-from transformers import AutoTokenizer 
- 
-from sqlmodel import Session, select
-from gliner import GLiNER
-import torch
-from tqdm import tqdm
-from sqlmodel import select
-from sqlalchemy import func 
-from gliner import GLiNER
-
+import requests
 from jose import jwt, JWTError
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from sqlmodel import Session, select, func
 
-from sqlmodel import Session
-from app.core.database import engine
-
-from fastapi import APIRouter, BackgroundTasks, Depends, WebSocket, WebSocketDisconnect
-from sqlmodel import Session
-from app.services.training_service import load_training_data
-from app.schemas import TrainingRequest
-
+from app.core.database import engine, get_session
 from app.core.settings import settings
-from app.core.database import get_session
-from app.models_db import ModelArtifact, TrainingMetric, TrainingRun, User, TrainingEvaluation
 from app.models_db import (
     Dataset,
     Record,
     SourceTerm,
-    SentenceSegment,
-    Cluster,
-    ExtractionJob,
+    TrainingRun,
+    TrainingMetric,
+    TrainingEvaluation,
 )
 from app.routes.v1.auth import get_current_user
+from app.models_db import User
+from app.schemas import GLiNERTrainingRequest
+from app.services.gliner_data_service import build_gliner_training_data, load_reviewed_training_data
 
 # =========================
 # Setup
 # =========================
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 router = APIRouter()
 
-# =========================
-# Logging
-# =========================
-import logging
-
 os.makedirs("logs", exist_ok=True)
-log_file = os.path.join("logs", "monitoring.log")
-
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
 if not logger.handlers:
-    fh = logging.FileHandler(log_file)
+    fh = logging.FileHandler(os.path.join("logs", "monitoring.log"))
     ch = logging.StreamHandler()
-
-    formatter = logging.Formatter(
-        "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
-    )
-    fh.setFormatter(formatter)
-    ch.setFormatter(formatter)
-
-    logger.addHandler(fh)
-    logger.addHandler(ch)
-
-logger.info("monitoring.py logger initialized")
+    fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+    fh.setFormatter(fmt); ch.setFormatter(fmt)
+    logger.addHandler(fh); logger.addHandler(ch)
+logger.setLevel(logging.INFO)
 
 # =========================
 # Global state
 # =========================
 active_connections: List[WebSocket] = []
-
-training_state = {
-    "running": False,
-    "current_epoch": 0,
-    "metrics": [],
-    "stop_requested": False,
-}
-
-training_thread: threading.Thread | None = None
-
-# 🔥 CRITICAL
+training_state = {"stop_requested": False}
 main_loop = None
+
 
 # =========================
 # Broadcast helper
 # =========================
 async def broadcast_metric(data: dict):
-    logger.info(f"Broadcasting: {data}")
-
-    dead_connections = []
-
+    dead = []
     for ws in active_connections:
         try:
             await ws.send_json(data)
-            logger.info("Sent to client")
-        except Exception as e:
-            logger.error(f"Send failed: {e}")
-            dead_connections.append(ws)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        if ws in active_connections:
+            active_connections.remove(ws)
 
-    for ws in dead_connections:
-        active_connections.remove(ws)
+
+def emit_training_update(payload: dict):
+    global main_loop
+    if not main_loop:
+        return
+    asyncio.run_coroutine_threadsafe(broadcast_metric(payload), main_loop)
+
 
 # =========================
 # WebSocket endpoint
@@ -124,443 +76,222 @@ async def broadcast_metric(data: dict):
 @router.websocket("/ws/training")
 async def training_ws(websocket: WebSocket):
     global main_loop
-
     main_loop = asyncio.get_running_loop()
 
     token = websocket.query_params.get("token")
     if not token:
-        logger.info("Rejected: no token")
         await websocket.close(code=1008)
         return
 
-    
-
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        username = payload.get("sub")
-
-        if not username:
-            logger.info("Rejected: no username")
+        if not payload.get("sub"):
             await websocket.close(code=1008)
             return
-
     except JWTError:
-        logger.info("Rejected: invalid token")
         await websocket.close(code=1008)
         return
 
     await websocket.accept()
     active_connections.append(websocket)
-
-    logger.info(f"WebSocket connected: {username}")
-    logger.info(f"Active connections: {len(active_connections)}")
+    logger.info(f"WebSocket connected: {payload.get('sub')}")
 
     try:
         while True:
             await asyncio.sleep(1)
     except WebSocketDisconnect:
-        logger.info(f"Disconnected: {username}")
-        active_connections.remove(websocket)
+        if websocket in active_connections:
+            active_connections.remove(websocket)
+
 
 # =========================
-# Training thread (SIMULATED)
+# Background training job
 # =========================
-
-def encode_ner_example(text, entities, tokenizer, label2id):
-    encoding = tokenizer(
-        text,
-        return_offsets_mapping=True,
-        truncation=True,
-        padding="max_length",
-        max_length=256
-    )
-
-    input_ids = encoding["input_ids"]
-    offsets = encoding["offset_mapping"]
-
-    labels = [-100] * len(input_ids)
-
-    for ent in entities:
-        start, end, label = ent["start"], ent["end"], ent["label"]
-        label_id = label2id[label]
-
-        found = False
-
-        for i, (s, e) in enumerate(offsets):
-
-            if s == e:
-                continue
-
-            # token overlaps entity span (IMPORTANT FIX)
-            if not (e <= start or s >= end):
-                if not found:
-                    labels[i] = label_id  # B
-                    found = True
-                else:
-                    labels[i] = label_id  # I
-
-    # 🔥 safety check
-    if all(l == -100 for l in labels):
-        print("WARNING: sample has no labels!")
-
-    encoding["labels"] = labels
-
-    return {
-        "input_ids": input_ids,
-        "attention_mask": encoding["attention_mask"],
-        "labels": labels
-    }
-
-def emit_training_update(payload: dict):
-    global main_loop
-
-    if not main_loop:
-        return
-
-    asyncio.run_coroutine_threadsafe(
-        broadcast_metric(payload),
-        main_loop
-    )
-
-def to_python_types(obj):
-    import numpy as np
-
-    if isinstance(obj, dict):
-        return {k: to_python_types(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [to_python_types(v) for v in obj]
-    elif isinstance(obj, (np.float32, np.float64)):
-        return float(obj)
-    elif isinstance(obj, (np.int32, np.int64)):
-        return int(obj)
-    else:
-        return obj
-
-def split_dataset(dataset, val_ratio=0.2):
-    random.shuffle(dataset)
-    split_idx = int(len(dataset) * (1 - val_ratio))
-    return dataset[:split_idx], dataset[split_idx:]
-
-def run_training_sync(dataset_id: int, run_id: int, labels: list[str]):
-    import time
-
-    tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
-    #if not labels:
-    #    raise ValueError("Labels cannot be empty")
-
-    db = Session(engine)
-    try:
-        if not labels:
-            emit_training_update({
-            "type": "error",
-            "message": "Labels cannot be empty"
-            })
-            return
-        # ======================
-        # Load data
-        # ======================
-        records = db.exec(
-            select(Record).where(Record.dataset_id == dataset_id)
-        ).all()
-
-        source_terms = db.exec(
-            select(SourceTerm)
-            .join(Record)
-            .where(Record.dataset_id == dataset_id)
-            .where(SourceTerm.label.in_(labels))
-        ).all()
-
-        label2id = {l: i for i, l in enumerate(labels)}
-        id2label = {i: l for l, i in label2id.items()}
-
-        full_data = build_ner_dataset(records, source_terms, tokenizer, label2id)
-
-        train_data, val_data = split_dataset(full_data)
-
-        emit_training_update({
-            "type": "data_split",
-            "train_size": len(train_data),
-            "val_size": len(val_data)
-        })
-
-        emit_training_update({
-            "type": "training_start",
-            "run_id": run_id,
-            "dataset_size": len(train_data)
-        })
-
-        print("FULL DATA SIZE:", len(full_data))
-        print("TRAIN SIZE:", len(train_data))
-        print("VAL SIZE:", len(val_data))
-
-        # ======================
-        # Model
-        # ======================
-        model = AutoModelForTokenClassification.from_pretrained(
-            "bert-base-cased",
-            num_labels=len(labels),
-            id2label={i: l for l, i in label2id.items()},
-            label2id=label2id
-        )
-
-        optimizer = AdamW(model.parameters(), lr=2e-5)
-        model.train()
-
-        # ======================
-        # TRAIN LOOP
-        # ======================
-        epochs = 1
-        best_f1 = 0
-        patience = 2
-        no_improve_epochs = 0
-
-        for epoch in range(epochs):
-            total_loss = 0.0
-
-            emit_training_update({
-                "type": "epoch_start",
-                "epoch": epoch + 1,
-                "total_epochs": epochs
-            })
-
-            for i, sample in enumerate(train_data):
-
-                input_ids = torch.tensor([sample["input_ids"]])
-                attention_mask = torch.tensor([sample["attention_mask"]])
-                labels_tensor = torch.tensor([sample["labels"]])
-
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels_tensor
-                )
-
-                loss = outputs.loss
-
-                # 🚀 skip NaN losses
-                if torch.isnan(loss):
-                    continue
-
-                loss.backward()
-
-                # 🚀 ADD THIS LINE HERE
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-                optimizer.step()
-                optimizer.zero_grad()
-
-                total_loss += loss.item()
-
-                # 🔥 LIVE BATCH UPDATE (THIS IS WHAT YOU WERE MISSING)
-                if i % 10 == 0:
-                    emit_training_update({
-                        "type": "batch_update",
-                        "epoch": epoch + 1,
-                        "batch": i,
-                        "loss": float(loss.item())
-                    })
-
-            avg_loss = total_loss / max(len(train_data), 1)
-
-            # 🔥 VALIDATION
-            eval_results = evaluate_model(model, val_data, id2label)
-
-            emit_training_update({
-                "type": "epoch_end",
-                "epoch": epoch + 1,
-                "loss": float(avg_loss),
-                "val_f1": float(eval_results["f1"]),
-            })
-
-            # 🔥 EARLY STOPPING LOGIC
-            if eval_results["f1"] > best_f1:
-                best_f1 = eval_results["f1"]
-                no_improve_epochs = 0
-            else:
-                no_improve_epochs += 1
-
-            if no_improve_epochs >= patience:
-                emit_training_update({
-                    "type": "early_stopping",
-                    "epoch": epoch + 1
-                })
-                break
-
-            #emit_training_update({
-            #    "type": "epoch_end",
-            #    "epoch": epoch + 1,
-            #    "loss": float(avg_loss)
-            #})
-
-            db.add(TrainingMetric(
-                run_id=run_id,
-                epoch=epoch + 1,
-                loss=float(avg_loss),
-                precision=0,
-                recall=0,
-                f1=0
-            ))
+def run_gliner_training_job(
+    run_id: int,
+    training_examples: list[dict],
+    request: GLiNERTrainingRequest,
+) -> None:
+    """Polls bioner for training progress and mirrors updates to DB + WebSocket."""
+    with Session(engine) as db:
+        run = db.get(TrainingRun, run_id)
+        if run:
+            run.status = "running"
+            db.add(run)
             db.commit()
 
-        # ======================
-        # SAVE MODEL
-        # ======================
-        model_path = f"models/model_{run_id}"
-        model.save_pretrained(model_path)
-        tokenizer.save_pretrained(model_path)
+    emit_training_update({"type": "training_start", "run_id": run_id})
 
-        # ======================
-        # FINAL EVALUATION
-        # ======================
-        final_eval = evaluate_model(model, val_data, id2label)
-        db.add(TrainingEvaluation(
+    try:
+        response = requests.post(
+            f"{settings.EXTRACT_HOST}/training/start",
+            json={
+                "run_id": run_id,
+                "base_model": request.base_model,
+                "training_data": training_examples,
+                "num_epochs": request.num_epochs,
+                "learning_rate": request.learning_rate,
+                "train_batch_size": request.train_batch_size,
+                "val_ratio": request.val_ratio,
+                "device": request.device,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+    except Exception as e:
+        logger.error(f"Failed to start training on bioner: {e}")
+        _mark_run(run_id, "failed")
+        emit_training_update({"type": "error", "run_id": run_id, "message": str(e)})
+        return
+
+    # Poll bioner until training completes
+    while True:
+        if training_state.get("stop_requested"):
+            training_state["stop_requested"] = False
+            try:
+                requests.post(f"{settings.EXTRACT_HOST}/training/stop/{run_id}", timeout=10)
+            except Exception:
+                pass
+            _mark_run(run_id, "stopped")
+            emit_training_update({"type": "stopped", "run_id": run_id})
+            return
+
+        try:
+            status_resp = requests.get(
+                f"{settings.EXTRACT_HOST}/training/status/{run_id}",
+                timeout=10,
+            )
+            status_resp.raise_for_status()
+            status_data = status_resp.json()
+        except Exception as e:
+            logger.warning(f"Failed to poll training status: {e}")
+            time.sleep(5)
+            continue
+
+        for event in status_data.get("new_events", []):
+            emit_training_update(event)
+            _persist_metric_if_epoch(run_id, event)
+
+        job_status = status_data.get("status")
+        if job_status in ("completed", "failed", "stopped"):
+            break
+
+        time.sleep(5)
+
+    if job_status == "completed":
+        output_path = status_data.get("output_path")
+        _mark_run(run_id, "completed", output_model_path=output_path)
+        emit_training_update({
+            "type": "completed",
+            "run_id": run_id,
+            "output_path": output_path,
+        })
+    else:
+        _mark_run(run_id, job_status or "failed")
+        error_msg = status_data.get("error") or ""
+        emit_training_update({"type": "error", "run_id": run_id, "message": error_msg})
+
+
+def _mark_run(run_id: int, status: str, output_model_path: str = None) -> None:
+    with Session(engine) as db:
+        run = db.get(TrainingRun, run_id)
+        if run:
+            run.status = status
+            if output_model_path:
+                run.output_model_path = output_model_path
+            db.add(run)
+            db.commit()
+
+
+def _persist_metric_if_epoch(run_id: int, event: dict) -> None:
+    if event.get("type") != "epoch_update":
+        return
+    with Session(engine) as db:
+        epoch = event.get("epoch", 0)
+        db.add(TrainingMetric(
             run_id=run_id,
-            precision=float(final_eval["precision"]),
-            recall=float(final_eval["recall"]),
-            f1=float(final_eval["f1"]),
-            per_label=to_python_types(final_eval["per_label"])
+            epoch=int(epoch),
+            loss=float(event.get("loss", 0) or event.get("train_loss", 0)),
+            precision=0.0,
+            recall=0.0,
+            f1=float(event.get("eval_f1", 0)),
         ))
-
         db.commit()
 
-        emit_training_update({
-            "type": "evaluation",
-            "precision": float(final_eval["precision"]),
-            "recall": float(final_eval["recall"]),
-            "f1": float(final_eval["f1"]),
-            "per_label": to_python_types(final_eval["per_label"])
-        })
 
-
-    finally:
-        db.close()
-
-
-def evaluate_model(model, dataset, id2label):
-    model.eval()
-
-    true_labels = []
-    pred_labels = []
-
-    for sample in dataset:
-        inputs = {
-            "input_ids": torch.tensor([sample["input_ids"]]),
-            "attention_mask": torch.tensor([sample["attention_mask"]])
-        }
-
-        with torch.no_grad():
-            outputs = model(**inputs)
-
-        preds = outputs.logits.argmax(-1).squeeze().tolist()
-        labels = sample["labels"]
-
-        true_seq = []
-        pred_seq = []
-
-        for p, l in zip(preds, labels):
-            if l == -100:
-                continue
-
-            true_seq.append(id2label[l])
-            pred_seq.append(id2label[p])
-
-        if true_seq:
-            true_labels.append(true_seq)
-            pred_labels.append(pred_seq)
-
-    # 🚀 ADD THIS BLOCK
-    if not true_labels:
-        return {
-            "precision": 0,
-            "recall": 0,
-            "f1": 0,
-            "per_label": {}
-        }
-
-    report = classification_report(true_labels, pred_labels, output_dict=True)
-
-    return {
-        "precision": precision_score(true_labels, pred_labels),
-        "recall": recall_score(true_labels, pred_labels),
-        "f1": f1_score(true_labels, pred_labels),
-        "per_label": report
-    }
-
- 
+# =========================
+# Training endpoints
+# =========================
 @router.post("/start")
 async def start_training(
-    request: TrainingRequest,
+    request: GLiNERTrainingRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ):
-    dataset_id = request.dataset_id
-    labels = request.labels
+    # Reject if a run is already active for this dataset
+    existing = db.exec(
+        select(TrainingRun)
+        .where(TrainingRun.dataset_id == request.dataset_id)
+        .where(TrainingRun.status == "running")
+    ).first()
+    if existing:
+        raise HTTPException(409, "Training already in progress for this dataset")
+
+    records, source_terms = load_reviewed_training_data(db, request.dataset_id, request.labels)
+    training_examples = build_gliner_training_data(records, source_terms)
+
+    if len(training_examples) < 2:
+        raise HTTPException(
+            422,
+            f"Not enough reviewed training examples ({len(training_examples)} found). "
+            "Ensure source terms are clustered and clusters are reviewed.",
+        )
 
     run = TrainingRun(
-        dataset_id=dataset_id,
-        user_id=current_user.id,
-        status="running",
-        total_epochs=5
+        dataset_id=request.dataset_id,
+        status="pending",
+        base_model=request.base_model,
+        labels=request.labels,
     )
-
     db.add(run)
     db.commit()
     db.refresh(run)
 
-    threading.Thread(
-        target=run_training_sync,
-        args=(dataset_id, run.id, labels),
-        daemon=True
-    ).start()
+    training_state["stop_requested"] = False
+    background_tasks.add_task(run_gliner_training_job, run.id, training_examples, request)
+    return {"run_id": run.id, "status": "pending"}
 
-    return {"run_id": run.id}
-
-
-def build_ner_dataset(records, source_terms, tokenizer, label2id):
-    dataset = []
-
-    terms_by_record = {}
-    for t in source_terms:
-        terms_by_record.setdefault(t.record_id, []).append(t)
-
-    for r in records:
-        entities = []
-
-        for t in terms_by_record.get(r.id, []):
-            entities.append({
-                "start": t.start_position,
-                "end": t.end_position,
-                "label": t.label
-            })
-
-        encoded = encode_ner_example(r.text, entities, tokenizer, label2id)
-        empty_count = 0
-        # 🚀 SKIP EMPTY SAMPLES HERE
-        if all(l == -100 for l in encoded["labels"]):
-            empty_count += 1
-            continue
-        print("EMPTY SAMPLES:", empty_count)
-
-        dataset.append(encoded)
-
-    return dataset
 
 @router.post("/stop")
 async def stop_training():
-    if training_state["running"]:
-        training_state["stop_requested"] = True
-        return {"message": "Stop requested"}
-    return {"message": "No training in progress"}
+    training_state["stop_requested"] = True
+    return {"message": "Stop requested"}
 
 
-from sqlmodel import select, func
+@router.get("/runs/{run_id}")
+def get_run_status(run_id: int, db: Session = Depends(get_session)):
+    run = db.get(TrainingRun, run_id)
+    if not run:
+        raise HTTPException(404, "Training run not found")
+    return {
+        "run_id": run.id,
+        "dataset_id": run.dataset_id,
+        "status": run.status,
+        "base_model": run.base_model,
+        "labels": run.labels,
+        "output_model_path": run.output_model_path,
+        "created_at": run.created_at,
+    }
 
+
+# =========================
+# Monitoring GET endpoints (kept as-is)
+# =========================
 @router.get("/datasets/{dataset_id}/full-stats")
 def get_full_stats(dataset_id: int, db: Session = Depends(get_session)):
-
     total_records = db.exec(
-        select(func.count(Record.id))
-        .where(Record.dataset_id == dataset_id)
+        select(func.count(Record.id)).where(Record.dataset_id == dataset_id)
     ).one()
 
     total_terms = db.exec(
@@ -579,9 +310,7 @@ def get_full_stats(dataset_id: int, db: Session = Depends(get_session)):
     return {
         "totalRecords": total_records,
         "totalTerms": total_terms,
-        "labelDistribution": {
-            label: count for label, count in label_distribution
-        }
+        "labelDistribution": {label: count for label, count in label_distribution},
     }
 
 
@@ -591,36 +320,26 @@ def get_all_evaluations(db: Session = Depends(get_session)):
         select(TrainingEvaluation, TrainingRun)
         .join(TrainingRun, TrainingRun.id == TrainingEvaluation.run_id)
     ).all()
-
     return [
         {
-            "run_id": r.TrainingEvaluation.run_id,
-            "dataset_id": r.TrainingRun.dataset_id,
-            "precision": r.TrainingEvaluation.precision,
-            "recall": r.TrainingEvaluation.recall,
-            "f1": r.TrainingEvaluation.f1,
-            "per_label": r.TrainingEvaluation.per_label,
+            "run_id": ev.run_id,
+            "dataset_id": run.dataset_id,
+            "precision": ev.precision,
+            "recall": ev.recall,
+            "f1": ev.f1,
+            "per_label": ev.per_label,
         }
-        for r in rows
+        for ev, run in rows
     ]
 
 
 @router.get("/runs/{run_id}/evaluation")
-def get_evaluation(run_id: int, session: Session = Depends(get_session)):
-    evaluation = session.exec(
-        select(TrainingEvaluation)
-        .where(TrainingEvaluation.run_id == run_id)
+def get_evaluation(run_id: int, db: Session = Depends(get_session)):
+    evaluation = db.exec(
+        select(TrainingEvaluation).where(TrainingEvaluation.run_id == run_id)
     ).first()
-
     if not evaluation:
-        return {
-            "run_id": run_id,
-            "precision": 0,
-            "recall": 0,
-            "f1": 0,
-            "per_label": {},
-        }
-
+        return {"run_id": run_id, "precision": 0, "recall": 0, "f1": 0, "per_label": {}}
     return {
         "run_id": evaluation.run_id,
         "precision": evaluation.precision,
@@ -631,60 +350,23 @@ def get_evaluation(run_id: int, session: Session = Depends(get_session)):
 
 
 @router.get("/datasets/{dataset_id}/runs")
-def get_runs_for_dataset(dataset_id: int, session: Session = Depends(get_session)):
-    runs = session.exec(
+def get_runs_for_dataset(dataset_id: int, db: Session = Depends(get_session)):
+    runs = db.exec(
         select(TrainingRun)
         .where(TrainingRun.dataset_id == dataset_id)
         .order_by(TrainingRun.id.desc())
     ).all()
-
-    return [
-        {
-            "run_id": run.id,
-            "dataset_id": run.dataset_id,
-        }
-        for run in runs
-    ]
-
-
-@router.get("/evaluations")
-def get_all_evaluations(session: Session = Depends(get_session)):
-    rows = session.exec(
-        select(TrainingEvaluation, TrainingRun)
-        .join(TrainingRun, TrainingRun.id == TrainingEvaluation.run_id)
-    ).all()
-
-    return [
-        {
-            "run_id": eval.run_id,
-            "dataset_id": run.dataset_id,
-            "precision": eval.precision,
-            "recall": eval.recall,
-            "f1": eval.f1,
-            "per_label": eval.per_label,
-        }
-        for eval, run in rows
-    ]
+    return [{"run_id": run.id, "dataset_id": run.dataset_id, "status": run.status} for run in runs]
 
 
 @router.get("/datasets/{dataset_id}/runs/evaluations")
-def get_dataset_runs_evaluations(
-    dataset_id: int,
-    session: Session = Depends(get_session),
-):
-    runs = session.exec(
-        select(TrainingRun).where(TrainingRun.dataset_id == dataset_id)
-    ).all()
-
+def get_dataset_runs_evaluations(dataset_id: int, db: Session = Depends(get_session)):
+    runs = db.exec(select(TrainingRun).where(TrainingRun.dataset_id == dataset_id)).all()
     result = []
-
     for run in runs:
-        evals = session.exec(
-            select(TrainingEvaluation).where(
-                TrainingEvaluation.run_id == run.id
-            )
+        evals = db.exec(
+            select(TrainingEvaluation).where(TrainingEvaluation.run_id == run.id)
         ).all()
-
         result.append({
             "run_id": run.id,
             "dataset_id": dataset_id,
@@ -696,7 +378,6 @@ def get_dataset_runs_evaluations(
                     "per_label": e.per_label or {},
                 }
                 for e in evals
-            ]
+            ],
         })
-
     return result

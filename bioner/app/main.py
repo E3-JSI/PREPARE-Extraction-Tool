@@ -5,6 +5,7 @@ from argparse import ArgumentParser, ArgumentTypeError
 from app.interfaces import NERRequest
 from app.model_manager import get_model_manager
 from app.routes_model_management import router as model_router
+from app.routes_training import router as training_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -126,5 +127,6 @@ if __name__ == "__main__":
     server = ls.LitServer(api, accelerator="auto", timeout=300)
 
     server.app.include_router(model_router)
+    server.app.include_router(training_router)
 
     server.run(host=args.host, port=args.port)
