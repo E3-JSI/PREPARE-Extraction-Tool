@@ -13,7 +13,6 @@ class TrainingStartRequest(BaseModel):
     num_epochs: int = 4
     learning_rate: float = 5e-6
     train_batch_size: int = 8
-    val_ratio: float = 0.2
     device: str = "cpu"
 
 
@@ -28,7 +27,6 @@ async def start_training(request: TrainingStartRequest):
         num_epochs=request.num_epochs,
         learning_rate=request.learning_rate,
         train_batch_size=request.train_batch_size,
-        val_ratio=request.val_ratio,
     )
     if not started:
         raise HTTPException(

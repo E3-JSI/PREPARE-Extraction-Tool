@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import time
 import threading
 from typing import List
@@ -13,7 +12,6 @@ from sqlmodel import Session, select, func
 from app.core.database import engine, get_session
 from app.core.settings import settings
 from app.models_db import (
-    Dataset,
     Record,
     SourceTerm,
     TrainingRun,
@@ -25,20 +23,8 @@ from app.models_db import User
 from app.schemas import GLiNERTrainingRequest
 from app.services.gliner_data_service import build_gliner_training_data, load_reviewed_training_data
 
-# =========================
-# Setup
-# =========================
 router = APIRouter()
-
-os.makedirs("logs", exist_ok=True)
 logger = logging.getLogger(__name__)
-if not logger.handlers:
-    fh = logging.FileHandler(os.path.join("logs", "monitoring.log"))
-    ch = logging.StreamHandler()
-    fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
-    fh.setFormatter(fmt); ch.setFormatter(fmt)
-    logger.addHandler(fh); logger.addHandler(ch)
-logger.setLevel(logging.INFO)
 
 # =========================
 # Global state
@@ -132,7 +118,6 @@ def run_gliner_training_job(
                 "num_epochs": request.num_epochs,
                 "learning_rate": request.learning_rate,
                 "train_batch_size": request.train_batch_size,
-                "val_ratio": request.val_ratio,
                 "device": request.device,
             },
             timeout=30,

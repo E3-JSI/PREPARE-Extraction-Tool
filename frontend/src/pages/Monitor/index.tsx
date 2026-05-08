@@ -37,6 +37,8 @@ const SectionCard = ({ title, children }: any) => (
 
 // ------------------ TYPES ------------------
 
+const DEFAULT_MODEL = "urchade/gliner_small-v2.1";
+
 type Run = { run_id: number };
 
 type PerLabelMetrics = {
@@ -57,12 +59,7 @@ interface Dataset {
 
 interface TrainingMetric {
   epoch: number;
-  total_epochs: number;
   loss: number;
-  accuracy: number;
-  precision: number;
-  recall: number;
-  f1: number;
 }
 
 // ------------------ COMPONENT ------------------
@@ -78,15 +75,21 @@ const Monitor = () => {
 
   const [datasetStats, setDatasetStats] = useState<any>(null);
 
-  const [runs, setRuns] = useState<Run[]>([]);
+  const [, setRuns] = useState<Run[]>([]);
   const [selectedRun, setSelectedRun] = useState<number | null>(null);
 
   const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
 
   const [trainingMetrics, setTrainingMetrics] = useState<TrainingMetric[]>([]);
   const [isTraining, setIsTraining] = useState(false);
+  const [trainingStatus, setTrainingStatus] = useState<string>("");
 
   const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
+
+  // Model selection
+  const [baseModel, setBaseModel] = useState<string>(DEFAULT_MODEL);
+  const [customModel, setCustomModel] = useState<string>("");
+  const [useCustomModel, setUseCustomModel] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -98,6 +101,7 @@ const Monitor = () => {
     setEvaluation(null);
     setTrainingMetrics([]);
     setIsTraining(false);
+    setTrainingStatus("");
     setSelectedLabels([]);
   };
 
@@ -186,7 +190,7 @@ const Monitor = () => {
   // ------------------ NORMALIZATION ------------------
 
   const normalizeLabel = (label: string) =>
-    label.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    label.normalize("NFD").replace(/[̀-ͯ]/g, "");
 
   const normalizedRuns = allRunEvaluations.map((run) => ({
     run_id: run.run_id,
@@ -230,23 +234,34 @@ const Monitor = () => {
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
 
-      if (data.type === "batch_update") {
+      if (data.type === "epoch_update") {
         setTrainingMetrics((prev) => [
           ...prev,
           {
-            epoch: data.epoch,
-            total_epochs: 5,
-            loss: data.loss,
-            accuracy: 0,
-            precision: 0,
-            recall: 0,
-            f1: 0,
+            epoch: data.epoch ?? prev.length + 1,
+            loss: data.loss ?? data.train_loss ?? 0,
           },
         ]);
       }
 
-      if (data.type === "training_complete") {
+      if (data.type === "training_start" || data.type === "training_info") {
+        setIsTraining(true);
+        setTrainingStatus("Training started…");
+      }
+
+      if (data.type === "completed") {
         setIsTraining(false);
+        setTrainingStatus(`Completed — model saved to: ${data.output_path ?? "unknown"}`);
+      }
+
+      if (data.type === "stopped") {
+        setIsTraining(false);
+        setTrainingStatus("Training stopped.");
+      }
+
+      if (data.type === "error") {
+        setIsTraining(false);
+        setTrainingStatus(`Error: ${data.message}`);
       }
     };
 
@@ -255,11 +270,19 @@ const Monitor = () => {
 
   // ------------------ TRAINING ------------------
 
+  const resolvedModel = useCustomModel ? customModel.trim() : baseModel;
+
   const startTraining = async () => {
+    if (!resolvedModel) {
+      setTrainingStatus("Please enter a model name.");
+      return;
+    }
+
     setTrainingMetrics([]);
     setIsTraining(true);
+    setTrainingStatus("Submitting…");
 
-    await fetch("http://localhost:8000/api/v1/monitoring/start", {
+    const res = await fetch("http://localhost:8000/api/v1/monitoring/start", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -268,8 +291,15 @@ const Monitor = () => {
       body: JSON.stringify({
         dataset_id: selectedDatasetId,
         labels: selectedLabels,
+        base_model: resolvedModel,
       }),
     });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      setIsTraining(false);
+      setTrainingStatus(`Failed to start: ${err.detail ?? res.statusText}`);
+    }
   };
 
   const stopTraining = async () => {
@@ -279,6 +309,7 @@ const Monitor = () => {
     });
 
     setIsTraining(false);
+    setTrainingStatus("Stop requested.");
   };
 
   // ------------------ CHART DATA ------------------
@@ -323,7 +354,6 @@ const Monitor = () => {
           <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
             <StatCard label="Records" value={datasetStats.totalRecords} />
             <StatCard label="Terms" value={datasetStats.totalTerms} />
-            <StatCard label="Clusters" value={datasetStats.totalClusters} />
           </div>
 
           <LabelSelector
@@ -336,12 +366,63 @@ const Monitor = () => {
 
       {/* TRAINING */}
       <SectionCard title="Training">
-        <div style={{ display: "flex", gap: 10 }}>
-          <Button onClick={startTraining}>Start</Button>
-          <Button onClick={stopTraining}>Stop</Button>
+        {/* Model selector */}
+        <div style={{ marginBottom: 16 }}>
+          <p style={{ marginBottom: 8, fontWeight: 600 }}>Base model</p>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input
+                type="radio"
+                checked={!useCustomModel}
+                onChange={() => setUseCustomModel(false)}
+              />
+              <span>
+                Default:{" "}
+                <code style={{ background: "#f5f5f5", padding: "2px 6px", borderRadius: 4 }}>
+                  {DEFAULT_MODEL}
+                </code>
+              </span>
+            </label>
+
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input
+                type="radio"
+                checked={useCustomModel}
+                onChange={() => setUseCustomModel(true)}
+              />
+              Custom model path or HuggingFace ID
+            </label>
+
+            {useCustomModel && (
+              <input
+                type="text"
+                value={customModel}
+                onChange={(e) => setCustomModel(e.target.value)}
+                placeholder="e.g. urchade/gliner_medium-v2.1 or /model/gliner/my-model"
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #ccc",
+                  fontSize: 14,
+                  width: "100%",
+                  maxWidth: 480,
+                }}
+              />
+            )}
+          </div>
         </div>
 
-        {isTraining && <p style={{ color: "green" }}>Training running...</p>}
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <Button onClick={startTraining} disabled={isTraining}>Start</Button>
+          <Button onClick={stopTraining} disabled={!isTraining}>Stop</Button>
+        </div>
+
+        {trainingStatus && (
+          <p style={{ marginTop: 10, color: isTraining ? "green" : "#555" }}>
+            {trainingStatus}
+          </p>
+        )}
       </SectionCard>
 
       {/* GRID CHARTS */}
@@ -355,7 +436,7 @@ const Monitor = () => {
                 <XAxis dataKey="epoch" />
                 <YAxis />
                 <Tooltip />
-                <Line dataKey="loss" stroke="#ff4d4f" />
+                <Line dataKey="loss" stroke="#ff4d4f" dot={false} />
               </LineChart>
             </ResponsiveContainer>
           ) : (
@@ -404,10 +485,10 @@ const Monitor = () => {
             </LineChart>
           </ResponsiveContainer>
         ) : (
-          <p>No comparison data </p>
+          <p>No comparison data</p>
         )}
       </SectionCard>
-    </Layout> 
+    </Layout>
   );
 };
 

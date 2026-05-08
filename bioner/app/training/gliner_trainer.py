@@ -1,6 +1,5 @@
 import gc
 import logging
-import random
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -36,7 +35,6 @@ class GLiNERFinetuner:
         num_epochs: int = 4,
         learning_rate: float = 5e-6,
         train_batch_size: int = 8,
-        val_ratio: float = 0.2,
         device: str = "cpu",
     ):
         self.run_id = run_id
@@ -45,7 +43,6 @@ class GLiNERFinetuner:
         self.num_epochs = num_epochs
         self.learning_rate = learning_rate
         self.train_batch_size = train_batch_size
-        self.val_ratio = val_ratio
         self.device = device
 
         self._stop_event = threading.Event()
@@ -89,21 +86,13 @@ class GLiNERFinetuner:
             torch.cuda.empty_cache()  # no-op on CPU
 
     def _do_train(self) -> None:
-        data = list(self.training_data)
-        random.shuffle(data)
-        split = int(len(data) * (1 - self.val_ratio))
-        train_data, val_data = data[:split], data[split:]
-
-        if not train_data or not val_data:
-            raise ValueError(
-                f"Insufficient data after split: {len(train_data)} train, {len(val_data)} val"
-            )
+        if not self.training_data:
+            raise ValueError("No training examples provided")
 
         self._emit({
-            "type": "data_split",
+            "type": "training_info",
             "run_id": self.run_id,
-            "train_size": len(train_data),
-            "val_size": len(val_data),
+            "train_size": len(self.training_data),
         })
 
         model = GLiNER.from_pretrained(self.base_model_path, local_files_only=False)
@@ -114,8 +103,7 @@ class GLiNERFinetuner:
             self._status = "stopped"
             return
 
-        train_ds = _RawDataset(train_data)
-        eval_ds = _RawDataset(val_data)
+        train_ds = _RawDataset(list(self.training_data))
         collator = DataCollator(
             model.config,
             data_processor=model.data_processor,
@@ -131,7 +119,6 @@ class GLiNERFinetuner:
             num_train_epochs=self.num_epochs,
             per_device_train_batch_size=self.train_batch_size,
             learning_rate=self.learning_rate,
-            eval_strategy="epoch",
             save_strategy="no",
             fp16=False,                    # CPU default; override to True for CUDA
             use_cpu=(self.device == "cpu"),
@@ -155,7 +142,6 @@ class GLiNERFinetuner:
             model=model,
             args=args,
             train_dataset=train_ds,
-            eval_dataset=eval_ds,
             data_collator=collator,
         )
 

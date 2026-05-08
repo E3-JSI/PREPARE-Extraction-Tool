@@ -37,11 +37,10 @@ class TrainingRequest(BaseModel):
 class GLiNERTrainingRequest(BaseModel):
     dataset_id: int
     labels: list[str]
-    base_model: str          # path to GLiNER model, e.g. "/model/gliner/gliner_large-v2"
+    base_model: str = "urchade/gliner_small-v2.1"
     num_epochs: int = 4
     learning_rate: float = 5e-6
     train_batch_size: int = 8
-    val_ratio: float = 0.2
     device: str = "cpu"      # "cpu" by default; pass "cuda" to use GPU
 
 class ExtractionJobStatusResponse(BaseModel):
