@@ -2,6 +2,10 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import List, Optional
 
+from sqlmodel import SQLModel, Field
+from typing import Optional, Dict, Any
+import json
+
 from sqlalchemy import Column, JSON
 from sqlmodel import SQLModel, Field, Relationship
 
@@ -385,3 +389,62 @@ class SourceToConceptMap(SQLModel, table=True):
     comment: Optional[str] = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TrainingMetric(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+
+    run_id: int
+    epoch: int 
+    loss: Optional[float] = None
+    precision: Optional[float] = None
+    recall: Optional[float] = None
+    f1: Optional[float] = None
+
+
+class TrainingRun(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    dataset_id: int = Field(index=True)
+    status: str = Field(default="pending", index=True)  # pending|running|completed|failed|stopped
+    base_model: str = Field(default="")
+    labels: list = Field(sa_column=Column(JSON), default_factory=list)
+    output_model_path: Optional[str] = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class TrainingEvaluation(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    run_id: int = Field(foreign_key="trainingrun.id")
+
+    precision: Optional[float] = None
+    recall: Optional[float] = None
+    f1: Optional[float] = None
+
+    per_label: dict = Field(sa_column=Column(JSON))
+
+class ModelArtifact(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+
+    run_id: int
+    dataset_id: int
+
+    model_path: str
+    f1_score: float
+    precision: float
+    recall: float
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class UserModelPreference(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    user_id: int = Field(foreign_key="user.id", unique=True)
+    model_id: int = Field(foreign_key="trainingrun.id")
+
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    user: Optional["User"] = Relationship()
+    model: Optional["TrainingRun"] = Relationship()

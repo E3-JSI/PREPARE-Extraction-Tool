@@ -1,10 +1,27 @@
 import litserve as ls
 import logging
 from argparse import ArgumentParser, ArgumentTypeError
+
 from app.interfaces import NERRequest
-from app.engines import build_engine
+from app.model_manager import get_model_manager
+from app.routes_model_management import router as model_router
+from app.routes_training import router as training_router
 
 logging.basicConfig(level=logging.INFO)
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List
+
+app = FastAPI()
+
+@app.get("/model/info")
+def model_info():
+    manager = get_model_manager()
+    return {
+        "engine": getattr(manager, "current_engine", None),
+        "model_path": getattr(manager, "current_model_path", None),
+    }
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -15,82 +32,129 @@ def str2bool(v):
         return False
     raise ArgumentTypeError("Boolean value expected.")
 
+
 class NERAPI(ls.LitAPI):
     def __init__(self, 
-                 engine: str, 
-                 model: str, 
+                 engine: str | None = None, 
+                 model: str | None = None, 
                  adapter_model: str | None = None,
                  prompt_path: str | None = None,
-                 use_gpu: bool = False):
-        super().__init__()
+                 use_gpu: bool = False,
+                 api_path: str = "/ner"):
+        super().__init__(api_path=api_path)
         self.engine = engine
-        self.model = model
+        self.model_path = model
         self.adapter_model = adapter_model
         self.prompt_path = prompt_path
         self.use_gpu = use_gpu
 
     def setup(self, device):
-        self.model = build_engine(
-            engine=self.engine, 
-            model=self.model, 
-            adapter_model=self.adapter_model, 
-            prompt_path=self.prompt_path,
-            use_gpu=self.use_gpu)
+        """Setup runs in worker process - load initial model if specified."""
+        if self.engine and self.model_path:
+            try:
+                get_model_manager().switch_model(
+                    engine=self.engine,
+                    model=self.model_path,
+                    adapter_model=self.adapter_model,
+                    prompt_path=self.prompt_path,
+                    use_gpu=self.use_gpu
+                )
+                logging.info(f"Initial model loaded in worker: {self.engine} - {self.model_path}")
+            except Exception as e:
+                logging.error(f"Failed to load initial model: {e}")
+        else:
+            logging.info("No initial model specified. Use /models/switch to load a model.")
 
     def decode_request(self, request: NERRequest) -> dict:
         return {
             "medical_text": request.medical_text,
             "labels": request.labels or [],
+            "engine": request.engine,
+            "model": request.model,
         }
 
-    def predict(self, inputs: dict) -> dict:
-        return self.model.extract_entities(medical_text=inputs["medical_text"], 
-                                           labels=inputs["labels"])
+    def predict(self, inputs: dict) -> dict: 
 
+        if inputs.get("model"):
+            requested_model = inputs.get("model")
+            manager = get_model_manager()
+            if requested_model and manager.current_model_path != requested_model:
+                manager.switch_model(
+                    engine=inputs.get("engine", "gliner"),
+                    model=inputs["model"],
+                )
+
+        model = get_model_manager().get_model()
+        logging.info(f"Using model: {get_model_manager().current_model_path}")
+        if model is None:
+            raise RuntimeError("No model loaded")
+
+        return model.extract_entities(
+            medical_text=inputs["medical_text"],
+            labels=inputs["labels"],
+        )
+        
     def encode_response(self, output):
         return output
 
+
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--engine", # previously model_type
-                        type=str,
-                        choices=["huggingface", "gliner", "gliner2"],
-                        help="Type of model to use: 'huggingface' for Hugging Face LLM models or 'gliner' for GLiNER model."
+    parser.add_argument(
+        "--engine",
+        type=str,
+        choices=["huggingface", "gliner"],
+        default=None,
+        help="Type of model to use"
     )
-    parser.add_argument("--model", # previously model_path
-                        type=str,
-                        help="Path to the model to use. (Huggingface path)"
-                        )
-    parser.add_argument("--adapter_model", # previously adapter_path
-                        type=str,
-                        help="Path to the LLM adapter to use (if any)."
-                        )
-    parser.add_argument("--prompt_path",
-                        type=str,
-                        help="Path to the prompts file to use (if any)."
-                        )
-    parser.add_argument("--use_gpu",
-                        type=str2bool,
-                        default=False,
-                        help="Flag to use GPU for inference."
-                        )
-    parser.add_argument("--host",
-                        type=str,
-                        default="0.0.0.0",
-                        help="Host to run the server on."
-                        )
-    parser.add_argument("--port",
-                        type=int,
-                        default=8000,
-                        help="Port to run the server on."
-                        )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Path to the model to use"
+    )
+    parser.add_argument(
+        "--adapter_model",
+        type=str,
+        help="Path to the LLM adapter to use (if any)"
+    )
+    parser.add_argument(
+        "--prompt_path",
+        type=str,
+        help="Path to the prompts file to use (if any)"
+    )
+    parser.add_argument(
+        "--use_gpu",
+        type=str2bool,
+        default=False,
+        help="Flag to use GPU for inference"
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="0.0.0.0",
+        help="Host to run the server on"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to run the server on"
+    )
     args = parser.parse_args()
     api = NERAPI(
         engine=args.engine,
         model=args.model,
         adapter_model=args.adapter_model,
         prompt_path=args.prompt_path,
-        use_gpu=args.use_gpu
+        use_gpu=args.use_gpu,
+        api_path="/ner"
     )
-    server = ls.LitServer(api, accelerator="auto", timeout=300, api_path="/ner")
+
+    
+    server = ls.LitServer(api, accelerator="auto", timeout=300)
+
+    server.app.include_router(model_router)
+    server.app.include_router(training_router)
+
     server.run(host=args.host, port=args.port)

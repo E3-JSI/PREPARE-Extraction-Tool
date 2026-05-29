@@ -1,0 +1,32 @@
+.model_settings {
+  font-family: "Nunito Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+.monitor__title {
+  margin: 0 0 24px;
+  font-size: 28px;
+  font-weight: 700;
+  color: #1e3a5f;
+}
+
+.monitor__placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 40px;
+  background-color: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  text-align: center;
+}
+
+.monitor__placeholder p {
+  margin: 0 0 8px;
+  font-size: 16px;
+  color: #6b7280;
+}
+
+.monitor__placeholder p:last-child {
+  margin-bottom: 0;
+}

@@ -24,7 +24,7 @@ export default defineConfig(({ mode }) => {
       port: frontendPort,
       proxy: {
         "/api": {
-          target: env.BACKEND_HOST || "http://localhost:8000",
+          target: env.BACKEND_HOST || "http://prepare-backend:8000",
           changeOrigin: true,
           timeout: 600_000, // 10 min — match XHR timeout
         },

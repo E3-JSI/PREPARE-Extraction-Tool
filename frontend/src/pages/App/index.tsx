@@ -2,7 +2,7 @@ import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
 import AuthProvider from "components/AuthProvider";
-import ProtectedRoute from "components/ProtectedRoute";
+import ProtectedRoute from "components/ProtectedRoute"; 
 
 const Login = lazy(() => import("pages/Login"));
 const Datasets = lazy(() => import("pages/Datasets"));
@@ -16,6 +16,7 @@ const VocabularyDetail = lazy(() => import("pages/VocabularyDetail"));
 const VocabularyUpload = lazy(() => import("pages/VocabularyUpload"));
 const Monitor = lazy(() => import("pages/Monitor"));
 const UserProfile = lazy(() => import("pages/UserProfile"));
+const Model_Settings = lazy(() => import("pages/Model_Settings"));
 
 function App() {
   return (
@@ -104,6 +105,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Monitor />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/model_settings"
+              element={
+                <ProtectedRoute>
+                  <Model_Settings />
                 </ProtectedRoute>
               }
             />

@@ -2,6 +2,9 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from typing import Annotated, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -17,6 +20,10 @@ from app.core.database import get_session, User
 from app.schemas import MessageOutput, UserRegister, UserResponse, UserStatsResponse
 from app.models_db import Dataset, Vocabulary, RefreshToken
 from sqlmodel import Session, select, func
+
+import requests
+
+BIONER_URL = "http://localhost:5600"
 
 
 # ================================================
@@ -332,7 +339,7 @@ async def register(user_data: UserRegister, db: Session = Depends(get_session)):
     description="Authenticates a user with username and password via OAuth2 password flow. Returns JWT access and refresh tokens for subsequent API requests and updates the user's last login timestamp",
     response_description="JWT access token, refresh token, and token type (bearer)",
 )
-async def login(
+async def login2(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: Session = Depends(get_session),
 ):
@@ -353,6 +360,7 @@ async def login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is disabled",
         )
+    
 
     # Update last login timestamp
     user.last_login = datetime.now(timezone.utc)
@@ -368,12 +376,99 @@ async def login(
     # Create refresh token
     refresh_token = create_refresh_token(db, user)
 
+    try:
+        requests.post(
+        f"{BIONER_URL}/models/load-user",
+        json={"user_id": user.id},
+        timeout=1.0
+        )
+    except Exception as e:
+        # do NOT block login if inference service is down
+        logger.warning(f"Failed to notify bioner: {e}")
+
+
     return Token(
         access_token=access_token,
         refresh_token=refresh_token,
         token_type="bearer",
     )
 
+
+# backend/app/routes/auth.py
+
+import requests
+from datetime import datetime, timezone, timedelta
+from fastapi import HTTPException, status, Depends
+from sqlmodel import Session
+
+from app.models_db import UserModelPreference
+from app.core.database import get_session
+
+
+BIONER_URL = "http://localhost:5600"
+
+
+async def login(
+    form_data,
+    db: Session = Depends(get_session),
+):
+    user = authenticate_user(db, form_data.username, form_data.password)
+
+    if not user:
+        raise HTTPException(401, "Incorrect username or password")
+
+    if user.disabled:
+        raise HTTPException(403, "Account disabled")
+
+    # -------------------------
+    # 1. READ USER PREFERENCE
+    # -------------------------
+    pref = (
+        db.query(UserModelPreference)
+        .filter(UserModelPreference.user_id == user.id)
+        .first()
+    )
+
+    model_path = (
+        pref.model.model_path
+        if pref and pref.model
+        else "urchade/gliner_small"
+    )
+
+    # -------------------------
+    # 2. NOTIFY BIONER
+    # -------------------------
+    try:
+        requests.post(
+            f"{BIONER_URL}/models/load-user",
+            json={"model_path": model_path},
+            timeout=1.0,
+        )
+    except Exception as e:
+        print(f"Bioner not reachable: {e}")
+
+    # -------------------------
+    # 3. UPDATE LOGIN TIME
+    # -------------------------
+    user.last_login = datetime.now(timezone.utc)
+    db.add(user)
+    db.commit()
+
+    # -------------------------
+    # 4. RETURN TOKEN
+    # -------------------------
+    access_token = create_access_token(
+        data={"sub": user.username},
+        expires_delta=timedelta(minutes=30),
+    )
+
+    refresh_token = create_refresh_token(db, user)
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+    }
 
 @router.get(
     "/me",

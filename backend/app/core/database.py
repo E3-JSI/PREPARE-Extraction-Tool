@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 # TODO: Add echo=False in production
 engine = create_engine(settings.DATABASE_URL, echo=settings.ENVIRONMENT == "local")
 
-
 # ================================================
 # Database functions
 # ================================================

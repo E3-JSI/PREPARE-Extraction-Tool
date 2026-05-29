@@ -1,4 +1,14 @@
-.dev
 .env
-.env.prod
-.claude
+node_modules/
+dist/
+model_store/
+models/
+*.pt
+*.bin
+*.pth
+*.safetensors
+bioner/model/
+bioner/models/
+
+backend/model/
+backend/models/

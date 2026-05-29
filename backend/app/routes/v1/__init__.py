@@ -1,3 +1,4 @@
+
 from fastapi import APIRouter
 from app.routes.v1 import (
     health,
@@ -8,6 +9,10 @@ from app.routes.v1 import (
     bioner,
     vocabularies,
     mappings,
+    monitoring,
+    #model_settings,
+    training_events,
+    websocket,
 )
 
 api_router = APIRouter()
@@ -32,3 +37,15 @@ api_router.include_router(
 )
 
 api_router.include_router(mappings.router, prefix="/datasets", tags=["Mappings"])
+
+api_router.include_router(
+    monitoring.router, prefix="/monitor", tags=["Monitor"]
+)
+
+api_router.include_router(training_events.router, prefix="/bioner", tags=["Training Events"])
+
+api_router.include_router(websocket.router, prefix="/bioner", tags=["WebSocket"])
+
+#api_router.include_router(
+#    model_settings.router, prefix="/model_settings", tags=["Model_Settings"]
+#)

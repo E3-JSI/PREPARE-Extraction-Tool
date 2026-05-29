@@ -7,6 +7,8 @@ from starlette.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from elasticsearch.exceptions import ApiError
+from app.core.seed_models import seed_builtin_models
+
 
 from app.routes.v1 import api_router
 from app.core.settings import settings
@@ -30,7 +32,16 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Check database migration status
+
+    logger.info("🚀 LIFESPAN STARTED")
+
+    try:
+        logger.info("🌱 Seeding models...")
+        seed_builtin_models()
+        logger.info("🌱 Seeding completed")
+    except Exception as e:
+        logger.exception(f"❌ Seed failed: {e}")
+
     migration_status = check_migration_status()
 
     if not migration_status["up_to_date"]:
@@ -38,17 +49,14 @@ async def lifespan(app: FastAPI):
             "Database migrations are not up to date!\n"
             f"  Current revision: {migration_status['current']}\n"
             f"  Latest revision:  {migration_status['head']}\n"
-            "  Please run: alembic upgrade head"
         )
     else:
-        logger.info(f"Database is up to date (revision: {migration_status['current']})")
+        logger.info(f"DB is up to date: {migration_status['current']}")
 
-    # Register the models
     register_models()
-    # Check connection to elasticsearch
     check_es_connection()
-    yield
 
+    yield
 
 # initialize the FastAPI app
 app = FastAPI(
@@ -91,3 +99,7 @@ app.add_exception_handler(Exception, generic_exception_handler)
 
 # add API routes
 app.include_router(api_router, prefix=settings.API_V1_STR)
+
+
+
+#app.include_router(training_events_router, prefix="/api/v1/bioner")

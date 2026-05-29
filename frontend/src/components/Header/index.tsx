@@ -62,6 +62,16 @@ const Header = () => {
         >
           Monitor
         </NavLink>
+        <NavLink
+          to="/model_settings"
+          className={({ isActive }) =>
+            classNames(styles["header__nav-link"], {
+              [styles["header__nav-link--active"]]: isActive,
+            })
+          }
+        >
+          Settings
+        </NavLink>
       </nav>
 
       <div className={styles["header__right"]}>
