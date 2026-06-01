@@ -9,7 +9,7 @@ import Button from "@components/Button";
 import StatCard from "@components/StatCard";
 import ConfirmDialog from "@components/ConfirmDialog";
 import { ToastContainer } from "@components/Toast/ToastContainer";
-import ProgressBar from "@components/ProgressBar";
+import ProgressBar from "@/components/ProgressBar/index";
 import WorkflowPageHeader from "@components/WorkflowPageHeader";
 import { useRecords } from "@/hooks/useRecords";
 import { usePageTitle } from "@/hooks/usePageTitle";

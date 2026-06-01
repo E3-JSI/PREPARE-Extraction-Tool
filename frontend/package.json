@@ -57,6 +57,7 @@
     "vite": "^7.0.0",
     "vite-plugin-svgr": "^4.5.0",
     "vite-tsconfig-paths": "^5.1.4",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "@storybook/addon-mcp": "^0.6.0"
   }
 }

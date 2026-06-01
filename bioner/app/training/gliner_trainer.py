@@ -13,6 +13,7 @@ import requests
 from sklearn import metrics
 import torch
 from transformers import TrainerCallback 
+from app.library.ner_metrics import NERMetrics
 from gliner import GLiNER
 from gliner.data_processing.collator import DataCollator
 from gliner.training import Trainer, TrainingArguments
@@ -28,9 +29,31 @@ BACKEND_URL = os.getenv(
     "http://prepare-backend:8000"
 )
 
-CALLBACK_URL = (
-    f"{BACKEND_URL}/api/v1/bioner/internal/training-events"
-)
+CALLBACK_URL = (f"{BACKEND_URL}/api/v1/bioner/internal/training-events")
+
+from app.interfaces import Entity
+
+def gliner_to_entities(text: str, preds: list[dict]) -> list[Entity]:
+    return [
+        Entity(
+            text=text[p["start"]:p["end"]],
+            start=p["start"],
+            end=p["end"],
+            label=p["label"],
+        )
+        for p in preds
+    ]
+
+def gold_to_entities(text: str, gold: list[list]) -> list[Entity]:
+    return [
+        Entity(
+            text=text[start:end],
+            start=start,
+            end=end,
+            label=label,
+        )
+        for start, end, label in gold
+    ]
 
 
 def convert_to_gliner_format(data: list[dict]) -> list[dict]:
@@ -193,9 +216,36 @@ class GLiNERFinetuner:
     # TRAINING CORE
     # -----------------------------
 
+    def evaluate_model(self, model, dataset, labels):
+        metric_engine = NERMetrics(metrics=["exact", "relaxed", "overlap"])
+
+        true_batch = []
+        pred_batch = []
+
+        for item in dataset:
+            text = item["text"]
+
+            gold = gold_to_entities(text, item["ner"])
+            preds_raw = model.predict_entities(text, labels)
+            preds = gliner_to_entities(text, preds_raw)
+
+            true_batch.append(gold)
+            pred_batch.append(preds)
+
+        precision, recall, f1 = metric_engine.evaluate_ner_performance(
+            true_batch,
+            pred_batch,
+            match_type="overlap"   # good default for GLiNER
+        )
+
+        return {
+            "precision": precision,
+            "recall": recall,
+            "f1_score": f1,
+        }
     
 
-    def evaluate_model(self, model, dataset, labels):
+    def evaluate_model_old(self, model, dataset, labels):
         model.eval()
 
         tp = defaultdict(int)
@@ -557,24 +607,26 @@ class GLiNERFinetuner:
                 if finetuner._stop_event.is_set():
                     self.control.should_training_stop = True
 
-                epoch = getattr(self.state, "epoch", None)
-                loss = logs.get("loss", None)
-
-                if epoch is None and loss is None:
-                    return
-
                 event = {
-                    "type": "epoch_update",
+                    "type": "train_log",
                     "run_id": finetuner.run_id,
+                    "step": getattr(self.state, "global_step", None),
+                    "epoch": float(getattr(self.state, "epoch", 0) or 0),
                 }
 
-                if epoch is not None:
-                    event["epoch"] = float(epoch)
+                # forward ALL useful metrics safely
+                for key in [
+                    "loss",
+                    "grad_norm",
+                    "learning_rate",
+                    "eval_loss",
+                ]:
+                    if key in logs and logs[key] is not None:
+                        event[key] = float(logs[key])
 
-                if loss is not None:
-                    event["loss"] = float(loss)
-
-                finetuner._emit(event)
+                # only emit if we actually have something useful
+                if len(event) > 2:
+                    finetuner._emit(event)
 
 
 

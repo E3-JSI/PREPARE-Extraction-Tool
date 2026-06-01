@@ -7,7 +7,7 @@ class Entity(BaseModel):
     label: str
     start: int
     end: int
-    score: Optional[float]
+    score: Optional[float] = None
 
 
 class NERRequest(BaseModel):

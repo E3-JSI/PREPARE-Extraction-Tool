@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import Layout from "@components/Layout";
 import FileDropzone from "@components/FileDropzone";
 import Button from "@components/Button";
-import ProgressBar from "@components/ProgressBar";
+import ProgressBar from "@/components/ProgressBar/index";
 import TagInput from "@components/TagInput";
 import { useDatasets } from "@/hooks/useDatasets";
 import { usePageTitle } from "@/hooks/usePageTitle";

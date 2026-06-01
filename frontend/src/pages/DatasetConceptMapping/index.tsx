@@ -7,7 +7,7 @@ import StatCard from "@components/StatCard";
 import ConfirmDialog from "@components/ConfirmDialog";
 import { ToastContainer } from "@components/Toast/ToastContainer";
 import WorkflowPageHeader from "@components/WorkflowPageHeader";
-import { usePageTitle } from "@hooks/usePageTitle";
+import { usePageTitle } from "@/hooks/usePageTitle";
 import { useToast } from "@hooks/useToast";
 import * as api from "@/api";
 

@@ -1,4 +1,5 @@
-from venv import logger
+import logging
+logger = logging.getLogger(__name__)
 
 
 from fastapi import APIRouter, Depends
@@ -66,15 +67,21 @@ async def receive_training_event(
 
         metric = TrainingMetric(
             run_id=run_id,
-            epoch=epoch or 0,
+            epoch=safe_float(epoch_raw) or 0.0,
             loss=loss,
             precision=precision,
             recall=recall,
             f1=f1,
         )
 
-        db.add(metric)
         db.commit()
+        try:
+            db.add(metric)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(e)
+            raise
 
     # --------------------------
     # MODEL SAVED
@@ -149,6 +156,9 @@ async def receive_training_event(
             db.commit()
 
     # broadcast to frontend (real-time progress)
-    await manager.broadcast(payload)
+    try:
+        await manager.broadcast(payload)
+    except Exception as e:
+        logger.warning(f"broadcast failed: {e}")
 
     return {"ok": True}

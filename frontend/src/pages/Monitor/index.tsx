@@ -2,7 +2,7 @@
   import Layout from "@components/Layout";
   import Button from "@components/Button";
   import StatCard from "@components/StatCard";
-  import { usePageTitle } from "@hooks/usePageTitle";
+  import { usePageTitle } from "@/hooks/usePageTitle";
 
 
   import {
@@ -518,24 +518,35 @@ const getColor = (value: number) => {
 
       case "epoch_update": {
         const epoch = Number(data.epoch ?? 0);
-        const loss = data.loss ?? 0;
-
-        setTrainingMetrics((prev) => [
-          ...prev,
-          { epoch, loss },
-        ]);
 
         setProgress(() => {
           const safeTotal = totalEpochsRef.current;
-          const safeEpoch = epoch || 0;
 
           if (safeTotal <= 0) return 0;
 
-          return Math.min(100, (safeEpoch / safeTotal) * 100);
+          return Math.min(100, (epoch / safeTotal) * 100);
         });
 
         break;
       }
+
+      case "train_log": {
+        console.log("TRAIN LOG RECEIVED", data);
+
+        const epoch = Number(data.epoch ?? 0);
+        const loss = Number(data.loss ?? 0);
+
+        console.log("epoch=", epoch, "loss=", loss);
+
+        setTrainingMetrics((prev) => {
+          const next = [...prev, { epoch, loss }];
+          console.log("trainingMetrics=", next);
+          return next;
+        });
+
+        break;
+      }
+    
       case "completed":
         setIsTraining(false);
         setTrainingStatus(

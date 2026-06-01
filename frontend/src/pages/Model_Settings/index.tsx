@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import Layout from "@components/Layout";
 import Button from "@components/Button";
-import { usePageTitle } from "@hooks/usePageTitle";
+import { usePageTitle } from "@/hooks/usePageTitle";
 
 interface ModelOption {
   type: ReactNode;
