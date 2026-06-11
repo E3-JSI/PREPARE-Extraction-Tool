@@ -10,7 +10,165 @@ from sqlmodel import Session, select
 from app.models_db import Record, SourceTerm
 
 
+def tokenize_text_with_spans(text: str):
+    """
+    Tokenize text into words and punctuation and return token spans.
+
+    Returns:
+        tuple[list[str], list[tuple[int, int]]]:
+            - token strings
+            - char span tuples (start, end)
+    """
+    tokens = []
+    spans = []
+    for match in re.finditer(r"\b\w+\b|[^\w\s]", text, flags=re.UNICODE):
+        tokens.append(match.group())
+        spans.append((match.start(), match.end()))
+    return tokens, spans
+
+
+def tokenize_text(text: str) -> List[str]:
+    """
+    Tokenize text into words and punctuation.
+    Preserves punctuation as separate tokens.
+    """
+    tokenized_text, _ = tokenize_text_with_spans(text)
+    return tokenized_text
+
+
+def extract_gliner_entities_train(example, splitter):
+
+    example_text = example["text"]
+    ws_generator = splitter(example_text)
+
+    token_info = []
+    tokenized_text = []
+    for token_idx, token in enumerate(ws_generator):
+        token_info.append(
+            # token text, start char, end char, token index
+            (token[0], token[1], token[2], token_idx)
+        )
+        tokenized_text.append(token[0])
+
+    skipped_entities = 0
+    present_entities = []
+    seen_spans = set()
+    for entity in example.get("entities", []):
+        ent_text, ent_label = entity["text"], entity["label"]
+
+        ent_text_escaped = re.escape(ent_text.lower())
+        regex1 = rf"\b{ent_text_escaped}\b"
+
+        matches = [match for match in re.finditer(regex1, example_text.lower())]
+        if not matches:
+            skipped_entities += 1
+            continue
+
+        for match in matches:
+            mstart_idx, mend_idx = match.span()
+            match_ent = re.search(rf"\b{ent_text_escaped}\b", example_text.lower()[mstart_idx:mend_idx])
+            start_index = match.start() + match_ent.start()
+            end_index = start_index + len(ent_text)
+
+            entity_tokens = [
+                (token_text, token_idx)
+                for token_text, token_start, token_end, token_idx in token_info
+                if token_start >= start_index and token_end <= end_index
+            ]
+
+            if entity_tokens:
+                span = (entity_tokens[0][1], entity_tokens[-1][1], ent_label)
+                if span in seen_spans:
+                    continue
+                seen_spans.add(span)
+                present_entities.append([
+                    span[0], span[1], span[2]
+                ])
+
+    return {"tokenized_text": tokenized_text, "ner": present_entities}, skipped_entities
+
 def load_reviewed_training_data(
+    db: Session,
+    dataset_id: int,
+    labels: Optional[List[str]] = None,
+):
+    print(f"[GLiNER DATA LOAD] dataset_id={dataset_id}, labels={labels}")
+    records = db.exec(
+        select(Record)
+        .where(Record.dataset_id == dataset_id)
+        .where(Record.reviewed == True)
+    ).all()
+
+    if not records:
+        return []
+
+    record_ids = [r.id for r in records]
+
+    query = (
+        select(SourceTerm)
+        .where(SourceTerm.record_id.in_(record_ids))
+        .where(SourceTerm.start_position.is_not(None))
+        .where(SourceTerm.end_position.is_not(None))
+    )
+
+    if labels:
+        query = query.where(SourceTerm.label.in_(labels))
+
+    source_terms = db.exec(query).all()
+
+    terms_by_record = {}
+
+    for term in source_terms:
+        terms_by_record.setdefault(term.record_id, []).append(term)
+
+    training_data = []
+
+    for record in records:
+        text = record.text or ""
+
+        if not text:
+            continue
+
+        tokens, spans = tokenize_text_with_spans(text)
+
+        ner = []
+        for term in terms_by_record.get(record.id, []):
+            if (
+                term.start_position is None
+                or term.end_position is None
+                or not term.label
+            ):
+                continue
+
+            char_start = int(term.start_position)
+            char_end = int(term.end_position)
+
+            if char_start < 0 or char_end > len(text) or char_start >= char_end:
+                continue
+
+            token_indices = [
+                token_idx
+                for token_idx, (token_start, token_end) in enumerate(spans)
+                if token_start >= char_start and token_end <= char_end
+            ]
+
+            if not token_indices:
+                continue
+
+            ner.append([token_indices[0], token_indices[-1], term.label])
+
+        if ner:
+            training_data.append(
+                {
+                    "tokenized_text": tokens,
+                    "ner": ner,
+                }
+            )
+
+    return training_data
+
+
+def load_reviewed_training_dataOLD(
     db: Session,
     dataset_id: int,
     labels: Optional[List[str]] = None,
@@ -42,8 +200,6 @@ def load_reviewed_training_data(
     source_terms = db.exec(query).all()
 
     return records, source_terms
-
-
 # =========================================================
 # GLiNER BUILDER (FIXED + SAFE)
 # =========================================================
@@ -130,9 +286,7 @@ def build_gliner_training_data(records, source_terms):
 
     return dataset
 
-def build_gliner_training_data5(
-    records: List[Record],
-    source_terms: List[SourceTerm],
+def build_gliner_training_data5(records: List[Record], source_terms: List[SourceTerm],
 ) -> List[Dict]:
     """
     Output format:
@@ -247,10 +401,7 @@ def build_gliner_training_data5(
 
     return dataset
 
-def load_reviewed_training_data2(
-    db: Session,
-    dataset_id: int,
-    labels: Optional[List[str]] = None,
+def load_reviewed_training_data2( db: Session, dataset_id: int, labels: Optional[List[str]] = None,
 ) -> tuple[List[Record], List[SourceTerm]]:
     """
     Load reviewed records and their source terms for a dataset.
@@ -281,9 +432,7 @@ def load_reviewed_training_data2(
     source_terms = db.exec(query).all()
     return list(records), list(source_terms)
 
-def build_gliner_training_data4(
-    records: List[Record],
-    source_terms: List[SourceTerm],
+def build_gliner_training_data4(records: List[Record], source_terms: List[SourceTerm],
 ) -> List[Dict]:
     """
     GLiNER training format:
@@ -377,9 +526,7 @@ def build_gliner_training_data4(
 
     return dataset
 
-def build_gliner_training_data3(
-    records: List[Record],
-    source_terms: List[SourceTerm],
+def build_gliner_training_data3(records: List[Record],source_terms: List[SourceTerm],
 ) -> List[Dict]:
 
     terms_by_record: Dict[int, List[SourceTerm]] = defaultdict(list)
@@ -443,10 +590,7 @@ def build_gliner_training_data3(
 
     return examples
 
-
-def build_gliner_training_data2(
-    records: List[Record],
-    source_terms: List[SourceTerm],
+def build_gliner_training_data2(records: List[Record], source_terms: List[SourceTerm],
 ) -> List[Dict]:
     """
     Convert DB records + reviewed source terms into GLiNER span-based training format.

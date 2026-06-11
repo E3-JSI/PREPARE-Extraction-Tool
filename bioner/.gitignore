@@ -162,3 +162,5 @@ secrets/
 bioner/model/
 bioner/models/
 model_store/model_state.json
+
+notebooks/

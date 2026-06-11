@@ -57,35 +57,6 @@ def get_current_model():
     manager = get_model_manager()
     return manager.get_model_info()
 
-@router.post("/models/switch2", response_model=ModelInfo, status_code=status.HTTP_200_OK)
-async def switch_model(request: ModelSwitchRequest) -> ModelInfo:
-    try:
-        manager    = get_model_manager()
-        model_info = manager.switch_model(
-            engine=request.engine,
-            model=request.model,
-            adapter_model=request.adapter_model,
-            prompt_path=request.prompt_path,
-            use_gpu=request.use_gpu
-        )
-        return model_info
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Unexpected error while switching model: {str(e)}")
-
-
-@router.get("/models/current2", response_model=ModelInfo)
-async def get_current_model() -> ModelInfo:
-    manager = get_model_manager()
-    return manager.get_model_info()
-
-
-@router.get("/models/current3")
-async def get_current_model():
-    manager = get_model_manager()
-    return manager.get_model_info()
-
 
 @router.get("/models/health", response_model=ModelHealthCheck)
 async def model_health_check() -> ModelHealthCheck:

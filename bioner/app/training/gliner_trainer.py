@@ -3,7 +3,7 @@ import gc
 import logging
 import random
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 import os
@@ -244,7 +244,6 @@ class GLiNERFinetuner:
             "f1_score": f1,
         }
     
-
     def evaluate_model_old(self, model, dataset, labels):
         model.eval()
 
@@ -338,20 +337,7 @@ class GLiNERFinetuner:
                 }
             }
         }
-
-        #return {
-        #    "precision": precision,
-        #    "recall": recall,
-        #    "f1": f1,
-        #    "per_label": {
-        #        label: {
-        #            "precision": precision[label],
-        #            "recall": recall[label],
-        #            "f1": f1[label],
-        #        }
-        #        for label in all_eval_labels
-        #    }
-        #}
+ 
 
     def _mock_metrics(self, labels):
         per_label = {}
@@ -411,14 +397,50 @@ class GLiNERFinetuner:
             print("labels:", item.get("labels"))
             print("ner:", item.get("ner"))
 
-        #cleaned_data = convert_to_gliner_format(self.training_data)
+        # Check if data is already in correct format (from backend)
+        # Backend format: {"tokenized_text": [...], "ner": [[tok_start, tok_end, label], ...]}
+        # We need to detect and convert to trainer format: {"text": "...", "ner": [[tok_start, tok_end, label], ...]}
+        
         cleaned_data = []
 
         for item in self.training_data:
-            text = item.get("text")
-            entities = item.get("entities")
-
-        for item in self.training_data:
+            # ✅ NEW: Check if data is already in GLiNER token format from backend
+            if "tokenized_text" in item and "ner" in item:
+                tokenized_text = item.get("tokenized_text", [])
+                ner = item.get("ner", [])
+                
+                if not isinstance(tokenized_text, list) or not tokenized_text:
+                    continue
+                
+                if not isinstance(ner, list):
+                    continue
+                
+                # Reconstruct text by joining tokens with spaces
+                text = " ".join(str(t) for t in tokenized_text)
+                
+                if not text.strip():
+                    continue
+                
+                # Validate NER entries (token indices should be in range)
+                valid_ner = []
+                for ent in ner:
+                    if isinstance(ent, (list, tuple)) and len(ent) == 3:
+                        start_tok, end_tok, label = ent
+                        if isinstance(start_tok, int) and isinstance(end_tok, int) and isinstance(label, str):
+                            # Token indices are already correct, just validate bounds
+                            if 0 <= start_tok <= end_tok < len(tokenized_text):
+                                # valid_ner.append([start_tok, end_tok, label])
+                                valid_ner.append([start_tok,end_tok + 1,label])
+                
+                if valid_ner:
+                    cleaned_data.append({
+                        "text": text,
+                        "tokenized_text": tokenized_text,
+                        "ner": valid_ner
+                    })
+                continue
+            
+            # ✅ FALLBACK: Old format with "entities" field (character-based)
             text = item.get("text")
             entities = item.get("entities", [])
 
@@ -464,8 +486,6 @@ class GLiNERFinetuner:
                     "ner": ner
                 })
 
-
-
         if not cleaned_data:
             raise ValueError(
                 "No valid training samples after conversion. "
@@ -475,6 +495,24 @@ class GLiNERFinetuner:
         for i, item in enumerate(cleaned_data[:3]):
             print(f"\nSample {i}:")
             print(item)
+
+        # 💾 SAVE cleaned_data to JSON for inspection/debugging
+        import json
+        BASE_DIR = Path.cwd()
+        data_output_dir = BASE_DIR / "training_data"
+        data_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cleaned_data_file = data_output_dir / f"cleaned_training_data_run{self.run_id}_{timestamp}.json"
+        
+        with open(cleaned_data_file, "w", encoding="utf-8") as f:
+            json.dump(cleaned_data, f, indent=2, ensure_ascii=False)
+        
+        abs_path = cleaned_data_file.resolve()
+        print(f"\n💾 SAVED cleaned training data")
+        print(f"   Filename: {cleaned_data_file.name}")
+        print(f"   Full path: {abs_path}")
+        print(f"   Total samples: {len(cleaned_data)}")
 
         class _RawDataset(TorchDataset):
             def __init__(self, data):
@@ -496,18 +534,42 @@ class GLiNERFinetuner:
             def __getitem__(self, idx):
                 item = self.data[idx]
 
+                # If tokenized_text exists, use it; otherwise just use plain text
+                tokenized_text = item.get("tokenized_text")
+                if not tokenized_text:
+                    # Fallback: tokenize the text if not provided
+                    tokenized_text = item["text"].split()
 
                 return {
                     "text": item["text"],
                     "ner": item["ner"],
-                    "tokenized_text": item["text"]
+                    "tokenized_text": tokenized_text
                 }
-
-        
+        random.seed(42)
         random.shuffle(cleaned_data)
-        split_idx = int(len(cleaned_data) * (1 - self.val_ratio))
-        train_data = cleaned_data[:split_idx]
-        val_data = cleaned_data[split_idx:]
+
+        total = len(cleaned_data)
+
+        if self.val_ratio > 0:
+            random.shuffle(cleaned_data)
+            split_idx = int(len(cleaned_data) * (1 - self.val_ratio))
+            train_data = cleaned_data[:split_idx]
+            val_data = cleaned_data[split_idx:]
+        else:
+            train_data = cleaned_data
+            val_data = []
+
+        # ----------------------------
+        # LOG SPLIT STATS
+        # ----------------------------
+
+        train_pct = (len(train_data) / total) * 100 if total else 0
+        val_pct = (len(val_data) / total) * 100 if total else 0
+
+        print("\n📊 DATA SPLIT SUMMARY")
+        print(f"Total samples      : {total}")
+        print(f"Train samples      : {len(train_data)} ({train_pct:.1f}%)")
+        print(f"Validation samples : {len(val_data)} ({val_pct:.1f}%)")
 
         train_ds = GLiNERDataset(train_data)
         val_ds   = GLiNERDataset(val_data)
@@ -529,7 +591,7 @@ class GLiNERFinetuner:
         output_dir.mkdir(parents=True, exist_ok=True)
 
 
-        print(f"\n💾 SAVING MODEL TO: {output_dir}\n")
+        print(f"\n💾 SAVING MODEL TRAINING FILE TO: {output_dir}\n")
         print("Current working dir:", os.getcwd())
 
         args = TrainingArguments(
@@ -590,16 +652,6 @@ class GLiNERFinetuner:
                     raise KeyboardInterrupt("Stopped before loss computation")
                 return super().compute_loss(model, inputs, return_outputs=return_outputs)
             
-                def compute_loss(self, model, inputs, return_outputs=False):
-                    if finetuner._stop_event.is_set():
-                        self.control.should_training_stop = True
-
-                    outputs = model(**inputs)
-
-                    loss = outputs["loss"] if isinstance(outputs, dict) else outputs.loss
-
-                    return (loss, outputs) if return_outputs else loss
-            
 
             def log(self, logs: dict, *args: Any, **kwargs: Any) -> None:
                 super().log(logs, *args, **kwargs)
@@ -633,9 +685,19 @@ class GLiNERFinetuner:
         print("\nCHECK SAMPLE SPANS:")
         for i, item in enumerate(cleaned_data[:3]):
             text = item["text"]
-            for start, end, label in item["ner"]:
-                assert text[start:end], "Empty span detected"
-                assert start < end
+            tokenized_text = item.get("tokenized_text", [])
+            
+            # If we have tokenized_text, spans are token indices; otherwise character indices
+            if tokenized_text:
+                # Token indices - validate bounds
+                for start, end, label in item["ner"]:
+                    assert 0 <= start <= end <= len(tokenized_text), f"Token index out of bounds: [{start}:{end}] for {len(tokenized_text)} tokens"
+                    assert start < end, f"Invalid token span: start={start} must be < end={end}"
+            else:
+                # Character indices - validate span is not empty
+                for start, end, label in item["ner"]:
+                    assert text[start:end], "Empty span detected"
+                    assert start < end
 
 
         trainer = _TrackingTrainer(
@@ -648,7 +710,7 @@ class GLiNERFinetuner:
 
         labels = list(set(
             e[2]
-            for item in cleaned_data
+            for item in train_data
             for e in item["ner"]
         ))
         print("labels:", labels)
@@ -669,6 +731,40 @@ class GLiNERFinetuner:
             trainer.train()
             # ✅ 1. RUN EVALUATION HERE (AFTER TRAINING)
             metrics = self.evaluate_model(model, val_ds, labels)
+
+                        # ----------------------------
+            # SAVE EVALUATION RESULTS
+            # ----------------------------
+            eval_output_dir = Path.cwd() / "training_data"
+            eval_output_dir.mkdir(parents=True, exist_ok=True)
+
+            eval_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            evaluation_file = eval_output_dir / f"evaluation_run{self.run_id}_{eval_timestamp}.json"
+
+            evaluation_payload = {
+                "run_id": self.run_id,
+                "base_model": self.base_model_path,
+                "dataset_size": {
+                    "train": len(train_data),
+                    "val": len(val_data),
+                    "total": total,
+                },
+                "split_ratio": {
+                    "train_pct": train_pct,
+                    "val_pct": val_pct,
+                },
+                "labels": labels,
+                "metrics": metrics,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+            with open(evaluation_file, "w", encoding="utf-8") as f:
+                json.dump(evaluation_payload, f, indent=2, ensure_ascii=False)
+
+            print(f"\n📊 Evaluation saved to: {evaluation_file.resolve()}")
+
+
             print("\n========== EVALUATION RESULTS ==========\n")
 
             # 👇 TEMP SWITCH (remove later)

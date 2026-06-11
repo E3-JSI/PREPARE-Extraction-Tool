@@ -4,6 +4,8 @@ import requests
 from datetime import datetime, timezone
 from typing import List
 import time
+import json
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlmodel import Session, select
@@ -53,12 +55,9 @@ from app.schemas import (
 )
 
 from datetime import datetime, timezone
-
 from app.models_db import UserModelPreference, ModelArtifact
-
 from fastapi import APIRouter, Depends
 from sqlmodel import Session
-
 from app.core.database import get_session 
 
 BIONER_URL = "http://localhost:5600"
@@ -440,13 +439,30 @@ def start_training(
     print("Learning Rate:", request.learning_rate)
     print("Batch Size:", request.train_batch_size)
     print("Device:", request.device)
+    print("Validation Ratio:", request.val_ratio)
     print("=" * 50)
 
     # ⏸️ DELAY 20 SECONDS (debug only)
     #time.sleep(20)
 
-    records, terms = load_reviewed_training_data(db, request.dataset_id, request.labels)
-    training_data = build_gliner_training_data(records, terms)
+    training_data = load_reviewed_training_data(db, request.dataset_id, request.labels)
+    print(training_data)
+    #training_data = build_gliner_training_data(records, terms)
+
+    #training_data = tokenize(records, terms)
+
+        # Save to JSON
+    output_dir = Path("training_data")
+    output_dir.mkdir(exist_ok=True)
+
+    json_path = output_dir / f"dataset_{request.dataset_id}_gliner.json"
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(training_data, f, ensure_ascii=False, indent=2)
+
+    print(f"✅ Training data saved: {json_path}")
+    print(f"Samples: {len(training_data)}")
+
 
     if not training_data:
         raise HTTPException(400, "No training data")
@@ -473,6 +489,7 @@ def start_training(
                 "learning_rate": request.learning_rate,
                 "train_batch_size": request.train_batch_size,
                 "device": request.device,
+                "val_ratio": request.val_ratio,
             },
             timeout=30,
         )
@@ -803,24 +820,6 @@ def list_available_models(db: Session = Depends(get_session)):
         "models": models,
         "selected_model": None  # or fetch current model if you want
     }
-
-    """try:
-
-        response = requests.get(
-            f"{settings.EXTRACT_HOST}/models/available",
-            timeout=10,
-        )
-
-        response.raise_for_status()
-
-        return response.json()
-
-    except requests.RequestException:
-
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="BioNER service unavailable",
-        )"""
 
 def switch_user_model(request, db, user_id: int):
     # -------------------------

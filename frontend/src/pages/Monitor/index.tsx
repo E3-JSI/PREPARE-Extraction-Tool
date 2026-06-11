@@ -4,6 +4,20 @@
   import StatCard from "@components/StatCard";
   import { usePageTitle } from "@/hooks/usePageTitle";
 
+  
+  import {
+    getDatasets,
+    getDatasetStats,
+    getDatasetRuns,
+    getAllEvaluations,
+    getAllRunEvaluations,
+    getRunEvaluation,
+    startTraining,
+    stopTraining,
+    getTrainingWSUrl,
+  } from "@/api/monitoring";
+  
+
 
   import {
     ResponsiveContainer,
@@ -65,118 +79,6 @@
     loss: number;
   }
 
-  // ------------------ COMPONENT ------------------
-
-// ------------------ HEATMAP ------------------
-
-/*const Heatmap = ({
-  data,
-  labels,
-}: {
-  data: any[];
-  labels: string[];
-}) => {
-  const getColor = (value: number) => {
-    // value between 0 and 1
-    const intensity = Math.round(value * 255);
-
-    return `rgb(
-      ${255 - intensity},
-      ${255 - intensity},
-      255
-    )`;
-  };
-
-  return (
-    <div
-      style={{
-        overflowX: "auto",
-        width: "100%",
-      }}
-    >
-      <table
-        style={{
-          borderCollapse: "collapse",
-          width: "100%",
-          minWidth: 700,
-        }}
-      >
-        <thead>
-          <tr>
-            <th
-              style={{
-                padding: 10,
-                border: "1px solid #ddd",
-                background: "#fafafa",
-                position: "sticky",
-                left: 0,
-                zIndex: 2,
-              }}
-            >
-              Run
-            </th>
-
-            {labels.map((label) => (
-              <th
-                key={label}
-                style={{
-                  padding: 10,
-                  border: "1px solid #ddd",
-                  background: "#fafafa",
-                  textAlign: "center",
-                }}
-              >
-                {label}
-              </th>
-            ))}
-          </tr>
-        </thead>
-
-        <tbody>
-          {data.map((row) => (
-            <tr key={row.run}>
-              <td
-                style={{
-                  padding: 10,
-                  border: "1px solid #ddd",
-                  fontWeight: 700,
-                  background: "#fff",
-                  position: "sticky",
-                  left: 0,
-                }}
-              >
-                #{row.run}
-              </td>
-
-              {labels.map((label) => {
-                const value = Number(row[label] ?? 0);
-
-                return (
-                  <td
-                    key={label}
-                    title={`${label}: ${value.toFixed(4)}`}
-                    style={{
-                      padding: 14,
-                      border: "1px solid #ddd",
-                      textAlign: "center",
-                      background: getColor(value),
-                      transition: "0.2s",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {value.toFixed(2)}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-};*/
-
-
   const Monitor = () => {
     usePageTitle("Monitor");
 
@@ -195,16 +97,13 @@
       suggestion: payload?.suggestion,
     });
 
-    // auto-hide after 5 seconds (optional)
     setTimeout(() => setAlert(null), 5000);
   };
 
-  
-const [token, setToken] = useState<string | null>(null);
 
-useEffect(() => {
-  setToken(localStorage.getItem("access_token"));
-}, []);
+    const [token] = useState<string | null>(() =>
+      localStorage.getItem("access_token")
+    );
 
 
     const [progress, setProgress] = useState(0);
@@ -219,6 +118,7 @@ useEffect(() => {
 
     const [runs, setRuns] = useState<Run[]>([]);
     const [selectedRun, setSelectedRun] = useState<number | null>(null);
+    const [valSplitRatio, setValSplitRatio] = useState<number>(0.1);
 
     const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
 
@@ -254,35 +154,14 @@ useEffect(() => {
     // ------------------ DATASETS ------------------
 
 useEffect(() => {
-  if (!token) {
-    console.warn("No token yet — skipping dataset fetch");
-    return;
-  }
+  if (!token) return;
 
   const fetchDatasets = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/v1/datasets", {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-
-      if (!res.ok) {
-        console.error("Dataset fetch failed:", res.status);
-        return;
-      }
-
-      const data = await res.json();
-
-      console.log("DATASETS RAW:", data);
-
-      const datasetsArray = data?.datasets ?? [];
-
-      console.log("DATASETS PARSED:", datasetsArray);
-
-      setDatasets(datasetsArray);
+      const data = await getDatasets(token, 1,50);
+      setDatasets(data.datasets ?? []);
     } catch (err) {
-      console.error("Dataset fetch error:", err);
+      console.error(err);
       setDatasets([]);
     }
   };
@@ -290,34 +169,20 @@ useEffect(() => {
   fetchDatasets();
 }, [token]);
 
-    const selectDataset = async (id: number) => {
-      setSelectedDatasetId(id);
-      resetAll();
+  const selectDataset = async (id: number) => {
+    setSelectedDatasetId(id);
+    resetAll();
 
-      const res = await fetch(
-        `http://localhost:8000/api/v1/bioner/datasets/${id}/full-stats`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-
-      const data = await res.json();
-      setDatasetStats(data);
-    };
+    const data = await getDatasetStats(id, token!);
+    setDatasetStats(data);
+  };
 
 useEffect(() => {
   if (!selectedDatasetId || !token) return;
 
-  const fetchAll = async () => {
-    const res = await fetch(
-      `http://localhost:8000/api/v1/bioner/evaluations`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-
-    const data = await res.json();
-
+  getAllEvaluations(token).then((data) => {
     setEvaluations(Array.isArray(data) ? data : []);
-  };
-
-  fetchAll();
+  });
 }, [selectedDatasetId, token]);
 
 
@@ -328,39 +193,16 @@ useEffect(() => {
 
   const fetchRuns = async () => {
     try {
-      const res = await fetch(
-        `http://localhost:8000/api/v1/bioner/datasets/${selectedDatasetId}/runs`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
+      const data = await getDatasetRuns(selectedDatasetId, token);
 
-      // 🔴 safety: handle non-JSON / backend errors
-      const contentType = res.headers.get("content-type");
-      const isJson = contentType?.includes("application/json");
-
-      const raw = isJson ? await res.json() : await res.text();
-
-      // 🔴 defensive parsing (handles all backend shapes)
-      const runsArray = Array.isArray(raw)
-        ? raw
-        : raw?.runs
-        ? raw.runs
-        : raw?.data
-        ? raw.data
-        : [];
-
-      console.log("✅ RUNS API RESPONSE:", raw);
-      console.log("✅ NORMALIZED RUNS:", runsArray);
+      const runsArray = Array.isArray(data)
+        ? data
+        : (data as any)?.runs ?? [];
 
       setRuns(runsArray);
-
-      // auto-select first run safely
       setSelectedRun(runsArray?.[0]?.run_id ?? null);
-    } catch (error) {
-      console.error("❌ Failed to fetch runs:", error);
+    } catch (e) {
+      console.error(e);
       setRuns([]);
       setSelectedRun(null);
     }
@@ -370,43 +212,24 @@ useEffect(() => {
 }, [selectedDatasetId, token]);
     // ------------------ ALL RUN EVAL ------------------
 
-    useEffect(() => {
-      if (!selectedDatasetId) return;
+useEffect(() => {
+  if (!selectedDatasetId || !token) return;
 
-      const fetchAll = async () => {
-        const res = await fetch(
-          `http://localhost:8000/api/v1/bioner/datasets/${selectedDatasetId}/runs/evaluations`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        const data = await res.json();
-        setAllRunEvaluations(data ?? []);
-      };
-
-      fetchAll();
-    }, [selectedDatasetId]);
-
-
-  //const evaluatedRunIds = new Set(
-  //  evaluatedRuns.map((r: any) => r.run_id)
-  //);
+  getAllRunEvaluations(selectedDatasetId, token).then((data) => {
+    setAllRunEvaluations(data ?? []);
+  });
+}, [selectedDatasetId, token]);
+ 
 
     // ------------------ SINGLE EVAL ------------------
 
-    useEffect(() => {
-      if (!selectedRun) return;
+  useEffect(() => {
+    if (!selectedRun || !token) return;
 
-      const fetchEvaluation = async () => {
-        const res = await fetch(
-          `http://localhost:8000/api/v1/bioner/runs/${selectedRun}/evaluation`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-
-        const data = await res.json();
-        setEvaluation(data);
-      };
-
-      fetchEvaluation();
-    }, [selectedRun]);
+    getRunEvaluation(selectedRun, token).then((data) => {
+      setEvaluation(data);
+    });
+  }, [selectedRun, token]);
 
  const [metricMode, setMetricMode] = useState<"f1" | "precision" | "recall">("f1");
 
@@ -424,12 +247,7 @@ const datasetEvaluations = evaluations.filter(
 const safeRuns = datasetEvaluations
   ? evaluations
   : [];
-
-// ------------------ METRIC MODE ------------------
-
  
-
-// ------------------ ALL LABELS ------------------
 
 const labelKeys = Array.from(
   new Set(
@@ -482,20 +300,14 @@ const getColor = (value: number) => {
   return `rgb(${r},${g},${b})`;
 };
  
-
-    
     // ------------------ WEBSOCKET ------------------
 
-    useEffect(() => {
-      if (!selectedDatasetId) return;
+  useEffect(() => {
+    if (!selectedDatasetId || !token) return;
+    const ws = new WebSocket(getTrainingWSUrl(token));
+    wsRef.current = ws;
 
-      const ws = new WebSocket(
-        `ws://localhost:8000/api/v1/bioner/ws/training?token=${token}`
-      );
-
-      wsRef.current = ws;
-
-  ws.onmessage = (event) => {
+    ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
 
     switch (data.type) {
@@ -577,66 +389,46 @@ const getColor = (value: number) => {
   };
 
       return () => ws.close();
-    }, [selectedDatasetId]);
+    }, [selectedDatasetId, token]);
 
     // ------------------ TRAINING ------------------
 
     const resolvedModel = useCustomModel ? customModel.trim() : baseModel;
 
-    const startTraining = async () => {
-      if (!resolvedModel) {
-        setTrainingStatus("Please enter a model name.");
-        return;
-      }
+    const startTrainingHandler = async () => {
+      if (!selectedDatasetId) return;
+
       setTrainingMetrics([]);
       setIsTraining(true);
       setTrainingStatus("Submitting…");
 
-      const res = await fetch(
-        "http://localhost:8000/api/v1/bioner/training/start",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            dataset_id: selectedDatasetId,
-            labels: selectedLabels,
-            base_model: resolvedModel,
-          }),
-        }
-      );
+      try {
+        const data = await startTraining({
+          dataset_id: selectedDatasetId,
+          labels: selectedLabels,
+          base_model: resolvedModel,
+          token: token!,
+          val_ratio: valSplitRatio,
+        });
 
-      // ❌ ERROR HANDLING FIRST
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
+        setActiveRunId(data.run_id);
+        setTrainingStatus("Training started successfully");
+      } catch (err: any) {
         setIsTraining(false);
         setTrainingStatus("Training failed to start");
         showAlert(err, "error");
-        return;
       }
+    };
 
-      // ✅ SUCCESS PATH (ADD IT HERE)
-      const data = await res.json();
-      setActiveRunId(data.run_id);
-      setTrainingStatus("Training started successfully");
-  };
 
-  const stopTraining = async () => {
-    if (!activeRunId) return;
+    const stopTrainingHandler = async () => {
+      if (!activeRunId || !token) return;
 
-    await fetch(
-      `http://localhost:8000/api/v1/bioner/training/stop/${activeRunId}`,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      }
-    );
+      await stopTraining(activeRunId, token);
 
-    setIsTraining(false);
-    setTrainingStatus("Stop requested.");
-  };
+      setIsTraining(false);
+      setTrainingStatus("Stop requested.");
+    };
 
     // ------------------ CHART DATA ------------------
 
@@ -763,9 +555,35 @@ const getColor = (value: number) => {
             </div>
           </div>
 
+          <div style={{ marginTop: 16 }}>
+          <label style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
+            Train / Eval Split
+          </label>
+
+          <select
+            value={valSplitRatio}
+            onChange={(e) => setValSplitRatio(Number(e.target.value))}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 8,
+              border: "1px solid #ccc",
+              minWidth: 160,
+            }}
+          >
+            <option value={0}>No split (100% train)</option>
+            <option value={0.1}>90 / 10</option>
+            <option value={0.2}>80 / 20</option>
+            <option value={0.3}>70 / 30</option>
+          </select>
+
+          <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
+            Split is done per document (no leakage between train and eval)
+          </div>
+        </div>
+
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <Button onClick={startTraining} disabled={isTraining}>Start</Button>
-            <Button onClick={stopTraining} disabled={!isTraining}>Stop</Button>
+            <Button onClick={startTrainingHandler} disabled={isTraining}>Start</Button>
+            <Button onClick={stopTrainingHandler} disabled={!isTraining}>Stop</Button>
           </div>
 
           {trainingStatus && (

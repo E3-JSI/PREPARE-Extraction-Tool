@@ -16,6 +16,7 @@ class TrainingStartRequest(BaseModel):
     learning_rate: float = 5e-6
     train_batch_size: int = 8
     device: str = "cpu"
+    val_ratio: float = 0.2
 
 # ==============================
 # MODEL VALIDATION
@@ -52,6 +53,7 @@ async def start_training(request: TrainingStartRequest):
         num_epochs=request.num_epochs,
         learning_rate=request.learning_rate,
         train_batch_size=request.train_batch_size,
+        val_ratio=request.val_ratio,
     )
 
     # 3. If busy → error

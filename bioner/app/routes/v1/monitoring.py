@@ -156,6 +156,8 @@ def run_gliner_training_job(
                 "learning_rate": request.learning_rate,
                 "train_batch_size": request.train_batch_size,
                 "device": request.device,
+                "val_ratio": request.val_ratio,
+                "use_train_eval_split": True,
             },
             timeout=30,
         )

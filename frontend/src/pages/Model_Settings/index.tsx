@@ -1,23 +1,17 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import Layout from "@components/Layout";
 import Button from "@components/Button";
 import { usePageTitle } from "@/hooks/usePageTitle";
 
-interface ModelOption {
-  type: ReactNode;
-  engine: ReactNode;
-  id: number;
-  name: string;
-  path: string;
-  created_at?: string;
-}
-
-
+import {
+  getAvailableModels,
+  getCurrentModel,
+  selectModel,
+} from "../../api/setting";
+import type { ModelOption } from "../../api/setting";
 
 const Model_Settings = () => {
   usePageTitle("Preferences");
-
-  const token = localStorage.getItem("access_token");
 
   const [models, setModels] = useState<ModelOption[]>([]);
   const [selectedModel, setSelectedModel] =
@@ -29,16 +23,13 @@ const Model_Settings = () => {
   useEffect(() => {
     const fetchModels = async () => {
       try {
-        const res = await fetch(
-          "http://localhost:8000/api/v1/bioner/models/available"
-        );
+        const data = await getAvailableModels();
 
-        const data = (await res.json()) as { models: ModelOption[] };
-        setModels(data.models.filter(m => m.id != null));
+        const validModels = data.models.filter((m) => m.id != null);
+        setModels(validModels);
 
-        // Auto-select first model if nothing selected
-        if (data.models?.length > 0 && !selectedModel) {
-          setSelectedModel(data.models[0]);
+        if (validModels.length > 0 && !selectedModel) {
+          setSelectedModel(validModels[0]);
         }
       } catch (error) {
         console.error("Failed to fetch models:", error);
@@ -51,14 +42,10 @@ const Model_Settings = () => {
   // ------------------ FETCH CURRENT MODEL ------------------
   useEffect(() => {
     const fetchCurrent = async () => {
-      try {
-        const res = await fetch(
-          "http://localhost:8000/api/v1/bioner/models/current"
-        );
+      try { 
+        const token = localStorage.getItem("access_token")!;
+        const data = await getCurrentModel(token);
 
-        const data = await res.json();
-
-        // Match current loaded model with available models
         const foundModel = models.find(
           (m) => m.path === data.model_path
         );
@@ -80,29 +67,11 @@ const Model_Settings = () => {
   const switchModel = async () => {
     if (!selectedModel) return;
 
-    console.log("ALL MODELS:", models);
-    console.log("SELECTED:", selectedModel);
-
     try {
       setLoading(true);
 
-      const res = await fetch(
-        "http://localhost:8000/api/v1/bioner/models/select",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            model_id: selectedModel.id,
-          }),
-        }
-      );
-
-      if (!res.ok) {
-        throw new Error("Failed to switch model");
-      }
+      const token = localStorage.getItem("access_token")!;
+      await selectModel(selectedModel.id, token);
 
       alert(`Switched to ${selectedModel.name}`);
     } catch (error) {

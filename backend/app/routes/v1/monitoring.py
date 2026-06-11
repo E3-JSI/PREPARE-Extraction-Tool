@@ -50,7 +50,6 @@ async def start_training_route(
         "status": "started",
     }
 
-
 @router.get("/datasets/{dataset_id}/runs")
 def get_runs(
     dataset_id: int,
@@ -62,21 +61,6 @@ def get_runs(
     ).all()
 
     return runs
-
-
-
-@router.get("/datasets/{dataset_id}/runs")
-def get_runs(
-    dataset_id: int,
-    db: Session = Depends(get_session),
-):
-    runs = db.exec(
-        select(TrainingRun)
-        .where(TrainingRun.dataset_id == dataset_id)
-    ).all()
-
-    return runs
-
 
 @router.get("/runs/{run_id}")
 def get_run_status(run_id: int, db: Session = Depends(get_session)):
@@ -92,7 +76,6 @@ def get_run_status(run_id: int, db: Session = Depends(get_session)):
         "output_model_path": run.output_model_path,
         "created_at": run.created_at,
     }
-
 
 # =========================
 # Monitoring GET endpoints (kept as-is)
@@ -136,7 +119,6 @@ def get_run_status(run_id: int, db: Session = Depends(get_session)):
         "output_model_path": run.output_model_path,
         "created_at": run.created_at,
     }
-
 
 # =========================
 # Monitoring GET endpoints (kept as-is)

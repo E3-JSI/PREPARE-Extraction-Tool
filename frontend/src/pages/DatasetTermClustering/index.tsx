@@ -217,9 +217,6 @@ export default function DatasetTermClustering() {
 
     // Store original state for rollback
     const originalClusters = clusters;
-
-    // Optimistic update: merge source terms into target, remove source cluster
-    // Use a Map to merge terms by text (case-insensitive)
     const termMap = new Map<string, ClusteredTerm>();
 
     // Add target terms first
@@ -412,11 +409,6 @@ export default function DatasetTermClustering() {
     } else {
       apiCalls.push(api.assignTermToCluster(termId, targetClusterId));
     }
-
-    // Delete source cluster if it became empty
-    // if (sourceClusterWillBeEmpty && sourceClusterId !== null) {
-    //   apiCalls.push(api.deleteCluster(sourceClusterId));
-    // }
 
     Promise.all(apiCalls).catch((err) => {
       // Rollback on error

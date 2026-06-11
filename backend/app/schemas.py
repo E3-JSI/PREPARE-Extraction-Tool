@@ -42,6 +42,8 @@ class GLiNERTrainingRequest(BaseModel):
     learning_rate: float = 5e-6
     train_batch_size: int = 8
     device: str = "cpu"      # "cpu" by default; pass "cuda" to use GPU
+    use_train_eval_split: bool = False
+    val_ratio: float = 0.1
 
 class ExtractionJobStatusResponse(BaseModel):
     """Progress snapshot for a dataset extraction job."""

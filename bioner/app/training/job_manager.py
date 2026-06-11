@@ -33,6 +33,7 @@ class TrainingJobManager:
         learning_rate: float = 5e-6,
         train_batch_size: int = 8,
         val_ratio: float = 0.2,
+        use_train_eval_split: bool = True,
     ) -> bool:
 
         with self._jobs_lock:
@@ -54,7 +55,7 @@ class TrainingJobManager:
                 num_epochs=num_epochs,
                 learning_rate=learning_rate,
                 train_batch_size=train_batch_size,
-                val_ratio=val_ratio,
+                val_ratio = val_ratio if use_train_eval_split else 0.0,
             )
 
             self._jobs[run_id] = finetuner

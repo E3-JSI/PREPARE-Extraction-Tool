@@ -9,6 +9,7 @@ models/
 *.safetensors
 bioner/model/
 bioner/models/
+bioner/notebooks/
 
 backend/model/
 backend/models/
