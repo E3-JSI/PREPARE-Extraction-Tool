@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from app.core.database import get_session
 from app.models_db import User, ModelArtifact
 from app.routes.v1.auth import get_current_user
+from app.core.settings import settings
  
 router = APIRouter(tags=["Model_settings"])
 

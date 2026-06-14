@@ -6,10 +6,11 @@ from sqlmodel import Session
 import requests
  
 from pydantic import BaseModel
+
 from typing import List, Dict, Any
 
 router = APIRouter()
-
+from app.core.settings import settings
 
 from app.core.database import get_session
 from app.schemas import GLiNERTrainingRequest
@@ -21,7 +22,7 @@ from app.services.gliner_data_service import (
 
 router = APIRouter()
 
-BACKEND_URL = "http://prepare-backend:8000"
+
 
 
 import requests
@@ -42,7 +43,7 @@ from app.services.gliner_data_service import (
 router = APIRouter()
 
 
-BACKEND_URL = os.getenv("BACKEND_URL", "http://prepare-backend:8000")
+BACKEND_URL = settings.BACKEND_URL
 
 
 class TrainRequest(BaseModel):

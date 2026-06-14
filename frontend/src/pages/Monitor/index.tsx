@@ -576,9 +576,6 @@ const getColor = (value: number) => {
             <option value={0.3}>70 / 30</option>
           </select>
 
-          <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
-            Split is done per document (no leakage between train and eval)
-          </div>
         </div>
 
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>

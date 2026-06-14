@@ -38,10 +38,15 @@ class Settings(BaseSettings):
 
     # Service settings
     EXTRACT_HOST: str = "http://0.0.0.0:5600"
+    BIONER_URL = "http://localhost:5600"
+    BACKEND_URL = "http://prepare-backend:8000"
 
     # Model settings
     EMBEDDING_MODEL_SENTENCE: Union[str, None] = None
     EMBEDDING_MODEL_MODEL2VEC: Union[str, None] = None
+
+    BIONER_DEFAULT_MODEL: str = "urchade/gliner_small"
+    BIONER_DEFAULT_MODEL_PVT: str = "ErikCalcina/synthetic-multi-med-notes-ner-gliner_multi-v2.1"
 
     @field_validator("DATABASE_URL")
     @classmethod

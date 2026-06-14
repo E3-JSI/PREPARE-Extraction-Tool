@@ -25,11 +25,11 @@ from app.services.gliner_data_service import build_gliner_training_data, load_re
 HF_MODELS = [
     {
         "name": "gliner_small",
-        "path": "urchade/gliner_small",
+        "path": settings.BIONER_DEFAULT_MODEL,
     },
     {
         "name": "medical_gliner_v2",
-        "path": "ErikCalcina/synthetic-multi-med-notes-ner-gliner_multi-v2.1",
+        "path": settings.BIONER_DEFAULT_MODEL_PVT,
     },
     ]
 
@@ -59,8 +59,6 @@ from app.models_db import UserModelPreference, ModelArtifact
 from fastapi import APIRouter, Depends
 from sqlmodel import Session
 from app.core.database import get_session 
-
-BIONER_URL = "http://localhost:5600"
 
 router = APIRouter(tags=["BioNER"])
 
@@ -340,7 +338,7 @@ def extract_entities_from_records(
         # fallback: pick seeded default model
         default_model = db.exec(
             select(TrainingRun)
-            .where(TrainingRun.output_model_path == "urchade/gliner_small")
+            .where(TrainingRun.output_model_path == settings.BIONER_DEFAULT_MODEL)
         ).first()
 
         if not default_model:

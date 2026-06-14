@@ -2,19 +2,21 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
+from app.core import settings
+from app.core import settings
 from app.core.database import engine
 from app.models_db import TrainingRun
 
 HF_MODELS = [
     {
         "name": "gliner_small",
-        "path": "urchade/gliner_small",
+        "path": settings.BIONER_DEFAULT_MODEL,
     },
     {
         "name": "medical_gliner_v2",
-        "path": "ErikCalcina/synthetic-multi-med-notes-ner-gliner_multi-v2.1",
+        "path": settings.BIONER_DEFAULT_MODEL_PVT,
     },
-]
+    ]
 
 
 def seed_builtin_models():

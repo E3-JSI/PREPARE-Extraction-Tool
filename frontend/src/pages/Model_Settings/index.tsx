@@ -7,8 +7,8 @@ import {
   getAvailableModels,
   getCurrentModel,
   selectModel,
-} from "../../api/setting";
-import type { ModelOption } from "../../api/setting";
+} from "../../api/settting";
+import type { ModelOption } from "../../api/settting";
 
 const Model_Settings = () => {
   usePageTitle("Preferences");

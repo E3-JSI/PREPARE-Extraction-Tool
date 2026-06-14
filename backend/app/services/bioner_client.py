@@ -4,7 +4,7 @@ from app.core.settings import settings
 
 def start_training(payload: dict):
     response = requests.post(
-        f"{settings.BIONER_HOST}/training/start",
+        f"{settings.BIONER_URL}/training/start",
         json=payload,
         timeout=30,
     )
@@ -16,7 +16,7 @@ def start_training(payload: dict):
 
 def stop_training(run_id: int):
     response = requests.post(
-        f"{settings.BIONER_HOST}/training/stop/{run_id}",
+        f"{settings.BIONER_URL}/training/stop/{run_id}",
         timeout=10,
     )
 

@@ -23,9 +23,6 @@ from sqlmodel import Session, select, func
 
 import requests
 
-BIONER_URL = "http://localhost:5600"
-
-
 # ================================================
 # Token classes
 # ================================================
@@ -378,7 +375,7 @@ async def login2(
 
     try:
         requests.post(
-        f"{BIONER_URL}/models/load-user",
+        f"{settings.BIONER_URL}/models/load-user",
         json={"user_id": user.id},
         timeout=1.0
         )
@@ -403,9 +400,6 @@ from sqlmodel import Session
 
 from app.models_db import UserModelPreference
 from app.core.database import get_session
-
-
-BIONER_URL = "http://localhost:5600"
 
 
 async def login(
@@ -440,7 +434,7 @@ async def login(
     # -------------------------
     try:
         requests.post(
-            f"{BIONER_URL}/models/load-user",
+            f"{settings.BIONER_URL}/models/load-user",
             json={"model_path": model_path},
             timeout=1.0,
         )

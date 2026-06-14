@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from xml.parsers.expat import model
 
+from app.core import settings
 from app.engines import build_engine
 from app.interfaces import ModelInfo, ModelHealthCheck, AvailableModel, AvailableModelsResponse
 
@@ -38,15 +39,13 @@ RUNS_DIR = GLINER_MODELS_DIR
 HF_MODELS = [
     {
         "name": "gliner_small",
-        "path": "urchade/gliner_small",
+        "path": settings.BIONER_DEFAULT_MODEL,
     },
     {
         "name": "medical_gliner_v2",
-        "path": "ErikCalcina/synthetic-multi-med-notes-ner-gliner_multi-v2.1",
+        "path": settings.BIONER_DEFAULT_MODEL_PVT,
     },
     ]
-
-
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +216,7 @@ class ModelManager:
 
         default_model = os.getenv(
             "DEFAULT_MODEL",
-            "urchade/gliner_small",
+            settings.BIONER_DEFAULT_MODEL,
         )
 
         return self.switch_model(

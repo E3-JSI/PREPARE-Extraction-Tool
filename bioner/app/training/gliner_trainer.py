@@ -18,17 +18,15 @@ from gliner import GLiNER
 from gliner.data_processing.collator import DataCollator
 from gliner.training import Trainer, TrainingArguments
 from torch.utils.data import Dataset as TorchDataset
+from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
 # -----------------------------
 # Backend callback config
 # -----------------------------
-BACKEND_URL = os.getenv(
-    "BACKEND_URL",
-    "http://prepare-backend:8000"
-)
 
+BACKEND_URL = settings.BACKEND_URL
 CALLBACK_URL = (f"{BACKEND_URL}/api/v1/bioner/internal/training-events")
 
 from app.interfaces import Entity
@@ -163,26 +161,27 @@ class GLiNERFinetuner:
 
         with self._events_lock:
             self._events.append(event)
+        def _send():
+            try:
+                response = requests.post(
+                    CALLBACK_URL,
+                    json=event,
+                    timeout=3
+                )
 
-        try:
-            response = requests.post(
-                CALLBACK_URL,
-                json=event,
-                timeout=3
-            )
+                logger.info(
+                    f"[CALLBACK SENT] "
+                    f"status={response.status_code} "
+                    f"type={event.get('type')}"
+                )
 
-            logger.info(
-                f"[CALLBACK SENT] "
-                f"status={response.status_code} "
-                f"type={event.get('type')}"
-            )
-
-        except Exception as e:
-            logger.exception(
-                f"[CALLBACK FAILED] "
-                f"type={event.get('type')} "
-                f"error={e}"
-            )
+            except Exception as e:
+                logger.exception(
+                    f"[CALLBACK FAILED] "
+                    f"type={event.get('type')} "
+                    f"error={e}"
+                )
+        threading.Thread(target=_send, daemon=True).start()
 
     # -----------------------------
     # RUN ENTRY
@@ -216,128 +215,80 @@ class GLiNERFinetuner:
     # TRAINING CORE
     # -----------------------------
 
+    
     def evaluate_model(self, model, dataset, labels):
-        metric_engine = NERMetrics(metrics=["exact", "relaxed", "overlap"])
+        true_entities = []
+        pred_entities = []
 
-        true_batch = []
-        pred_batch = []
+        evaluation_samples = []
 
         for item in dataset:
             text = item["text"]
 
+            predictions = model.predict_entities(
+                text,
+                labels,
+                threshold=0.5,
+            )
+
+            # your existing converters
             gold = gold_to_entities(text, item["ner"])
-            preds_raw = model.predict_entities(text, labels)
-            preds = gliner_to_entities(text, preds_raw)
+            #pred = gliner_to_entities(gold, predictions)
+            pred = [
+                Entity(
+                    text=p["text"],
+                    start=p["start"],
+                    end=p["end"],
+                    label=p["label"],
+                )
+                for p in predictions
+            ]
 
-            true_batch.append(gold)
-            pred_batch.append(preds)
+            true_entities.append(gold)
+            pred_entities.append(pred)
 
-        precision, recall, f1 = metric_engine.evaluate_ner_performance(
-            true_batch,
-            pred_batch,
-            match_type="overlap"   # good default for GLiNER
+            evaluation_samples.append(
+            {
+                "text": text,
+                "gold": [
+                    {
+                        "text": e.text,
+                        "start": e.start,
+                        "end": e.end,
+                        "label": e.label,
+                    }
+                    for e in gold
+                ],
+                "predicted": [
+                    {
+                        "text": e.text,
+                        "start": e.start,
+                        "end": e.end,
+                        "label": e.label,
+                    }
+                    for e in pred
+                ],
+            }
         )
 
-        return {
-            "precision": precision,
-            "recall": recall,
-            "f1_score": f1,
-        }
-    
-    def evaluate_model_old(self, model, dataset, labels):
-        model.eval()
+        metric_engine = NERMetrics(
+            metrics=["exact", "relaxed", "overlap"]
+        )
 
-        tp = defaultdict(int)
-        fp = defaultdict(int)
-        fn = defaultdict(int)
-
-        all_labels = list(labels)
-
-        # -----------------------------
-        # helper: span + label match
-        # -----------------------------
-        def is_match(pred, gold):
-            p_start, p_end, p_label = pred
-            g_start, g_end, g_label = gold
-
-            if p_label != g_label:
-                return False
-
-            # overlap match (robust to offset noise)
-            return not (p_end < g_start or g_end < p_start)
-
-        # -----------------------------
-        # evaluation loop
-        # -----------------------------
-        for item in dataset:
-            text = item["text"]
-
-            gold_ents = [(e[0], e[1], e[2]) for e in item["ner"]]
-
-            preds = model.predict_entities(text, all_labels)
-            pred_ents = [(p["start"], p["end"], p["label"]) for p in preds]
-
-            print("pred_ents:", pred_ents)
-            print("gold_ents:", gold_ents)
-
-            # track matched gold to avoid double FN counting
-            matched_gold = set()
-
-            # -------------------------
-            # TP / FP
-            # -------------------------
-            for pred in pred_ents:
-                matched = False
-
-                for i, gold in enumerate(gold_ents):
-                    if i in matched_gold:
-                        continue
-
-                    if is_match(pred, gold):
-                        tp[pred[2]] += 1
-                        matched_gold.add(i)
-                        matched = True
-                        break
-
-                if not matched:
-                    fp[pred[2]] += 1
-
-            # -------------------------
-            # FN
-            # -------------------------
-            for i, gold in enumerate(gold_ents):
-                if i not in matched_gold:
-                    fn[gold[2]] += 1
-
-        # -----------------------------
-        # compute metrics
-        # -----------------------------
-        precision, recall, f1 = {}, {}, {}
-
-        all_eval_labels = set(tp.keys()) | set(fp.keys()) | set(fn.keys())
-
-        for label in all_eval_labels:
-            p = tp[label] / (tp[label] + fp[label] + 1e-8)
-            r = tp[label] / (tp[label] + fn[label] + 1e-8)
-            f = 2 * p * r / (p + r + 1e-8)
-
-            precision[label] = p
-            recall[label] = r
-            f1[label] = f
+        precision, recall, f1 = metric_engine.evaluate_ner_performance(
+            true_entities,
+            pred_entities,
+            match_type="relaxed",
+        )
 
         metrics = {
-            "precision": {"Farmaco": round(random.uniform(0.6, 0.95), 4)},
-            "recall": {"Farmaco": round(random.uniform(0.5, 0.9), 4)},
-            "f1_score": {"Farmaco": round(random.uniform(0.55, 0.92), 4)},
-            "per_label": {
-                "Farmaco": {
-                    "precision": round(random.uniform(0.6, 0.95), 4),
-                    "recall": round(random.uniform(0.5, 0.9), 4),
-                    "f1_score": round(random.uniform(0.55, 0.92), 4),
-                }
-            }
+            "precision": round(precision, 4),
+            "recall": round(recall, 4),
+            "f1_score": round(f1, 4),
         }
- 
+
+        return metrics, evaluation_samples
+
 
     def _mock_metrics(self, labels):
         per_label = {}
@@ -597,15 +548,16 @@ class GLiNERFinetuner:
         args = TrainingArguments(
             output_dir=output_dir,
             num_train_epochs=self.num_epochs,
-            per_device_train_batch_size=self.train_batch_size,
+            #per_device_train_batch_size=self.train_batch_size,
             learning_rate=self.learning_rate,
             save_strategy="no",
             fp16=False,
             use_cpu=(self.device == "cpu"),
             dataloader_num_workers=0,
+            per_device_train_batch_size=1,
             report_to="none",
             logging_strategy="steps",
-            logging_steps=1,
+            logging_steps=10,
         )
 
         finetuner = self
@@ -730,7 +682,8 @@ class GLiNERFinetuner:
         try:
             trainer.train()
             # ✅ 1. RUN EVALUATION HERE (AFTER TRAINING)
-            metrics = self.evaluate_model(model, val_ds, labels)
+            # metrics = self.evaluate_model(model, val_ds, labels)
+            metrics, evaluation_samples = self.evaluate_model(model,val_ds,labels,)
 
                         # ----------------------------
             # SAVE EVALUATION RESULTS
@@ -756,6 +709,7 @@ class GLiNERFinetuner:
                 },
                 "labels": labels,
                 "metrics": metrics,
+                "evaluation_samples": evaluation_samples,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
 
