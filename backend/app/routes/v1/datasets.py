@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json as _json
 import math
 import os
 import re
@@ -25,12 +26,13 @@ from app.core.database import engine, get_session
 from app.core.model_registry import model_registry
 from app.core.settings import settings
 from app.models_db import (
-    Dataset, 
-    Record, 
-    SourceTerm, 
-    User, 
-    Cluster, 
-    SourceToConceptMap, 
+    Dataset,
+    Record,
+    SourceTerm,
+    SourceTermLink,
+    User,
+    Cluster,
+    SourceToConceptMap,
     ProcessingStatus,
 )
 from app.library.file_parser import parse_records_file
@@ -56,6 +58,8 @@ from app.schemas import (
     SourceTermCreate,
     SourceTermOutput,
     SourceTermsOutput,
+    SourceTermResponse,
+    SourceTermLinkResponse,
     MessageOutput,
     PaginationParams,
     ClusteredTerm,
@@ -141,6 +145,7 @@ def get_datasets(
             uploaded=dataset.uploaded,
             last_modified=dataset.last_modified,
             labels=dataset.labels,
+            label_relations=dataset.label_relations or [],
             date_label=dataset.date_label,
             status=dataset.status,
             error_message=dataset.error_message,
@@ -171,6 +176,7 @@ async def create_dataset(
     background_tasks: BackgroundTasks,
     name: str = Form(...),
     labels: str = Form(...),
+    label_relations: Optional[str] = Form(None),
     date_label: Optional[str] = Form(None),
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
@@ -196,14 +202,21 @@ async def create_dataset(
     file_path = await save_upload_to_disk(file, suffix)
 
     label_list = [label.strip() for label in labels.split(",")]
+    parsed_relations: list = []
+    if label_relations:
+        try:
+            parsed_relations = _json.loads(label_relations)
+        except Exception:
+            parsed_relations = []
     # start background ingestion
     background_tasks.add_task(
-        ingest_dataset_background, 
-        file_path, 
+        ingest_dataset_background,
+        file_path,
         name,
-        label_list, 
+        label_list,
         current_user.id,
         date_label,
+        parsed_relations,
     )
 
     dataset_response = DatasetUploadResponse(
@@ -218,6 +231,7 @@ def ingest_dataset_background(
     label_list: list,
     user_id: int,
     date_label: Optional[str] = None,
+    label_relations: Optional[list] = None,
 ):
     db = Session(engine)
 
@@ -226,6 +240,7 @@ def ingest_dataset_background(
     dataset = Dataset(
         name=name,
         labels=label_list,
+        label_relations=label_relations or [],
         user_id=user_id,
         date_label=date_label,
     )
@@ -333,6 +348,7 @@ def get_dataset(
         uploaded=dataset.uploaded,
         last_modified=dataset.last_modified,
         labels=dataset.labels,
+        label_relations=dataset.label_relations or [],
         date_label=dataset.date_label,
         status=dataset.status,
         error_message=dataset.error_message,
@@ -427,6 +443,7 @@ def get_dataset_overview(
         uploaded=dataset.uploaded,
         last_modified=dataset.last_modified,
         labels=dataset.labels,
+        label_relations=dataset.label_relations or [],
         date_label=dataset.date_label,
         status=dataset.status,
         error_message=dataset.error_message,
@@ -555,6 +572,7 @@ def delete_dataset_background(dataset_id: int):
             dataset = db.get(Dataset, dataset_id)
             if dataset is None:
                 print("Cannot find dataset to delete")
+                return
 
             db.delete(dataset)
             db.commit()
@@ -1039,8 +1057,58 @@ def get_source_terms_of_record(
         .limit(pagination.limit)
     ).all()
 
+    # Load all links for these terms (both directions)
+    term_ids = [t.id for t in source_terms]
+    all_links = db.exec(
+        select(SourceTermLink).where(
+            (SourceTermLink.from_term_id.in_(term_ids))
+            | (SourceTermLink.to_term_id.in_(term_ids))
+        )
+    ).all()
+
+    # Build a map of term_id -> list of SourceTermLinkResponse
+    term_map = {t.id: t for t in source_terms}
+    links_by_term: dict[int, list] = {t.id: [] for t in source_terms}
+    for link in all_links:
+        from_t = term_map.get(link.from_term_id)
+        to_t = term_map.get(link.to_term_id)
+        if from_t is None or to_t is None:
+            continue
+        link_resp = SourceTermLinkResponse(
+            id=link.id,
+            from_term_id=link.from_term_id,
+            to_term_id=link.to_term_id,
+            from_term_value=from_t.value,
+            to_term_value=to_t.value,
+            from_term_label=from_t.label,
+            to_term_label=to_t.label,
+        )
+        if link.from_term_id in links_by_term:
+            links_by_term[link.from_term_id].append(link_resp)
+        if link.to_term_id in links_by_term:
+            links_by_term[link.to_term_id].append(link_resp)
+
+    source_term_responses = [
+        SourceTermResponse(
+            id=t.id,
+            value=t.value,
+            label=t.label,
+            start_position=t.start_position,
+            end_position=t.end_position,
+            score=t.score,
+            automatically_extracted=t.automatically_extracted,
+            record_id=t.record_id,
+            linked_visit_date=t.linked_visit_date,
+            manual_linked_visit_date=t.manual_linked_visit_date,
+            linked_date_term_id=t.linked_date_term_id,
+            cluster_id=t.cluster_id,
+            links=links_by_term.get(t.id, []),
+        )
+        for t in source_terms
+    ]
+
     return SourceTermsOutput(
-        source_terms=source_terms,
+        source_terms=source_term_responses,
         pagination=create_pagination_metadata(
             total, pagination.limit, pagination.offset
         ),
@@ -1455,9 +1523,7 @@ def create_clusters_for_dataset(
     ).all()
 
     if not source_terms:
-        raise HTTPException(
-            status_code=400, detail="No source terms for this label in dataset"
-        )
+        return MessageOutput(message="No source terms for this label in dataset")
 
     raw_texts = [st.value for st in source_terms]
     if not raw_texts:
@@ -1535,19 +1601,25 @@ def create_clusters_for_dataset(
             "metric": "euclidean",
             "cluster_selection_method": "eom",
         }
-        clusterer = HDBSCAN(**HDBSCAN_PARAMS)
-        labels_arr = clusterer.fit_predict(embeddings)
 
-        labels_arr = _merge_labels_by_spelling(
-            labels_arr.tolist() if hasattr(labels_arr, "tolist") else labels_arr,
-            texts,
-            max_typos=1,
-        )
+        if len(texts) < HDBSCAN_PARAMS["min_cluster_size"]:
+            # Too few samples for HDBSCAN — treat all as noise so the
+            # noise-grouping block below creates one cluster per term.
+            labels_arr = [-1] * len(texts)
+        else:
+            clusterer = HDBSCAN(**HDBSCAN_PARAMS)
+            labels_arr = clusterer.fit_predict(embeddings)
 
-        labels_arr = _merge_labels_by_centroid_similarity(
-            labels_arr, embeddings, threshold=0.8
-        )
-        labels_arr = [int(x) for x in labels_arr]
+            labels_arr = _merge_labels_by_spelling(
+                labels_arr.tolist() if hasattr(labels_arr, "tolist") else labels_arr,
+                texts,
+                max_typos=1,
+            )
+
+            labels_arr = _merge_labels_by_centroid_similarity(
+                labels_arr, embeddings, threshold=0.8
+            )
+            labels_arr = [int(x) for x in labels_arr]
 
     # Remove existing clusters for this dataset/label
     # TODO: This might be a bit dangerous if the user is not careful

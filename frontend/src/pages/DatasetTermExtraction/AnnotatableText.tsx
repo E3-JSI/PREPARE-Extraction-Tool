@@ -1,10 +1,11 @@
-import React, { useRef, useMemo, useCallback } from "react";
+import React, { useRef, useMemo, useCallback, useState } from "react";
 import classNames from "classnames";
 
 import { getLabelColorClass } from "@/utils/labelColors";
 
-import type { SourceTerm, SourceTermCreate } from "@/types";
+import type { SourceTerm, SourceTermCreate, SourceTermLink } from "@/types";
 
+import LinkArrowOverlay from "./LinkArrowOverlay";
 import styles from "./styles.module.css";
 
 export interface AnnotatableTextProps {
@@ -16,6 +17,12 @@ export interface AnnotatableTextProps {
   onCreateAnnotation: (term: SourceTermCreate) => void;
   onSelectAnnotation: (id: number | null) => void;
   isAnnotating: boolean;
+  // Link mode
+  linkMode?: boolean;
+  linkFromId?: number | null;
+  onSpanLinkClick?: (termId: number) => void;
+  getCompatibleLabels?: (label: string) => string[];
+  isRelationLabel?: (label: string) => boolean;
 }
 
 const AnnotatableText: React.FC<AnnotatableTextProps> = ({
@@ -27,8 +34,27 @@ const AnnotatableText: React.FC<AnnotatableTextProps> = ({
   onCreateAnnotation,
   onSelectAnnotation,
   isAnnotating,
+  linkMode = false,
+  linkFromId = null,
+  onSpanLinkClick,
+  getCompatibleLabels,
+  isRelationLabel,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [hoveredTermId, setHoveredTermId] = useState<number | null>(null);
+
+  const hoveredConnectedIds = useMemo(() => {
+    if (hoveredTermId === null) return new Set<number>();
+    const connected = new Set<number>();
+    for (const term of annotations) {
+      for (const link of term.links ?? []) {
+        if (link.from_term_id === hoveredTermId) connected.add(link.to_term_id);
+        if (link.to_term_id === hoveredTermId) connected.add(link.from_term_id);
+      }
+    }
+    connected.add(hoveredTermId);
+    return connected;
+  }, [hoveredTermId, annotations]);
 
   // Build segments from text and annotations
   const segments = useMemo(() => {
@@ -95,6 +121,7 @@ const AnnotatableText: React.FC<AnnotatableTextProps> = ({
 
   // Handle text selection
   const handleMouseUp = useCallback(() => {
+    if (linkMode) return;
     if (!isAnnotating || !selectedLabel) return;
 
     const selection = window.getSelection();
@@ -113,7 +140,18 @@ const AnnotatableText: React.FC<AnnotatableTextProps> = ({
     // We need to traverse the DOM to find the correct offset
     const getTextOffset = (node: Node, offset: number): number => {
       let totalOffset = 0;
-      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
+      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => {
+          // Skip text inside aria-hidden elements (e.g. 🔗 badge) and SVG overlay
+          let parent = n.parentElement;
+          while (parent && parent !== container) {
+            if (parent.getAttribute("aria-hidden") === "true") return NodeFilter.FILTER_REJECT;
+            if (parent.tagName.toLowerCase() === "svg") return NodeFilter.FILTER_REJECT;
+            parent = parent.parentElement;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      });
 
       let currentNode: Node | null = walker.nextNode();
       while (currentNode) {
@@ -162,7 +200,7 @@ const AnnotatableText: React.FC<AnnotatableTextProps> = ({
 
     // Clear selection
     selection.removeAllRanges();
-  }, [isAnnotating, selectedLabel, text, annotations, onCreateAnnotation]);
+  }, [linkMode, isAnnotating, selectedLabel, text, annotations, onCreateAnnotation]);
 
   // Handle click on annotation
   const handleAnnotationClick = useCallback(
@@ -176,15 +214,24 @@ const AnnotatableText: React.FC<AnnotatableTextProps> = ({
 
   // Handle click on container to deselect
   const handleContainerClick = useCallback(() => {
+    if (linkMode) return;
     if (selectedAnnotation !== null) {
       onSelectAnnotation(null);
     }
-  }, [selectedAnnotation, onSelectAnnotation]);
+  }, [linkMode, selectedAnnotation, onSelectAnnotation]);
+
+  // Pre-compute from-term once per render for link mode
+  const linkFromTerm = linkMode && linkFromId != null
+    ? annotations.find((a) => a.id === linkFromId) ?? null
+    : null;
 
   return (
     <div
       ref={containerRef}
-      className={classNames(styles['annotatable-text'], { [styles['annotatable-text--annotating']]: isAnnotating })}
+      className={classNames(styles['annotatable-text'], {
+        [styles['annotatable-text--annotating']]: isAnnotating && !linkMode,
+        [styles['annotatable-text--link-mode']]: linkMode,
+      })}
       onMouseUp={handleMouseUp}
       onClick={handleContainerClick}
     >
@@ -192,21 +239,73 @@ const AnnotatableText: React.FC<AnnotatableTextProps> = ({
         segment.type === "text" ? (
           <span key={idx}>{segment.content}</span>
         ) : (
-          <span
-            key={idx}
-            className={classNames(styles['highlighted-term'], styles[getLabelColorClass(segment.term.label, labels)], {
-              [styles['highlighted-term--selected-annotation']]: selectedAnnotation === segment.term.id,
-            })}
-            title={`${segment.term.label}: ${segment.term.value}`}
-            onClick={(e) => handleAnnotationClick(segment.term.id, e)}
-          >
-            {segment.content}
-          </span>
+          (() => {
+            const term = segment.term;
+            const isLinkFrom = linkMode && term.id === linkFromId;
+            const compatibleWithFrom = linkFromTerm && getCompatibleLabels
+              ? getCompatibleLabels(linkFromTerm.label).includes(term.label)
+              : false;
+            const termIsRelation = isRelationLabel ? isRelationLabel(term.label) : false;
+            const isLinkable = linkMode && !isLinkFrom && (
+              linkFromId === null ? termIsRelation : compatibleWithFrom
+            );
+            const isNotLinkable = linkMode && !isLinkFrom && (
+              linkFromId === null ? !termIsRelation : !compatibleWithFrom
+            );
+            const alreadyLinked = linkMode && linkFromId !== null && compatibleWithFrom
+              && !!term.links?.find(
+                (l: SourceTermLink) =>
+                  (l.from_term_id === linkFromId && l.to_term_id === term.id) ||
+                  (l.to_term_id === linkFromId && l.from_term_id === term.id)
+              );
+
+            return (
+              <span
+                key={idx}
+                data-term-id={term.id}
+                className={classNames(
+                  styles['highlighted-term'],
+                  styles[getLabelColorClass(term.label, labels)],
+                  {
+                    [styles['highlighted-term--selected-annotation']]: !linkMode && selectedAnnotation === term.id,
+                    [styles['highlighted-term--link-from']]: isLinkFrom,
+                    [styles['highlighted-term--linkable']]: isLinkable && !alreadyLinked,
+                    [styles['highlighted-term--already-linked']]: alreadyLinked,
+                    [styles['highlighted-term--not-linkable']]: isNotLinkable,
+                    [styles['highlighted-term--arc-hover']]: !linkMode && hoveredConnectedIds.has(term.id),
+                  }
+                )}
+                title={`${term.label}: ${term.value}`}
+                onMouseEnter={() => { if (!linkMode) setHoveredTermId(term.id); }}
+                onMouseLeave={() => { if (!linkMode) setHoveredTermId(null); }}
+                onClick={(e) => {
+                  if (linkMode && onSpanLinkClick && !isNotLinkable) {
+                    e.stopPropagation();
+                    onSpanLinkClick(term.id);
+                  } else {
+                    handleAnnotationClick(term.id, e);
+                  }
+                }}
+              >
+                {segment.content}
+                {term.links && term.links.length > 0 && (
+                  <span className={styles['highlighted-term__link-badge']} aria-hidden="true">🔗</span>
+                )}
+              </span>
+            );
+          })()
         )
       )}
-      {isAnnotating && !selectedLabel && (
+      {!linkMode && isAnnotating && !selectedLabel && (
         <div className={styles['annotatable-text__hint']}>Select a label from the sidebar to start annotating</div>
       )}
+      <LinkArrowOverlay
+        containerRef={containerRef}
+        annotations={annotations}
+        hoveredTermId={hoveredTermId}
+        onHoverChange={setHoveredTermId}
+        interactive={!linkMode}
+      />
     </div>
   );
 };

@@ -11,6 +11,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from app.models_db import (
@@ -19,6 +20,7 @@ from app.models_db import (
     Dataset,
     Record,
     SourceTerm,
+    SourceTermLink,
     SourceToConceptMap,
 )
 
@@ -57,12 +59,18 @@ def _query_export_rows(
     status_filter: Optional[str],
 ) -> List[dict]:
     """Fetch all mapped source terms with patient/visit/concept data."""
+    LinkedTerm = aliased(SourceTerm)
+    LinkedCluster = aliased(Cluster)
+
     statement = (
-        select(SourceTerm, Record, Concept, SourceToConceptMap)
+        select(SourceTerm, Record, Concept, SourceToConceptMap, LinkedTerm, LinkedCluster)
         .join(Record, SourceTerm.record_id == Record.id)
         .join(Cluster, SourceTerm.cluster_id == Cluster.id)
         .join(SourceToConceptMap, SourceToConceptMap.cluster_id == Cluster.id)
         .join(Concept, SourceToConceptMap.concept_id == Concept.id)
+        .outerjoin(SourceTermLink, SourceTermLink.from_term_id == SourceTerm.id)
+        .outerjoin(LinkedTerm, SourceTermLink.to_term_id == LinkedTerm.id)
+        .outerjoin(LinkedCluster, LinkedTerm.cluster_id == LinkedCluster.id)
         .where(Record.dataset_id == dataset_id)
     )
 
@@ -78,15 +86,16 @@ def _query_export_rows(
             "linked_visit_date": st.linked_visit_date,
             "cluster_id": st.cluster_id,
             "record_id": r.id,
-            "patient_id": r.patient_id,
+            "patient_id": r.patient_id.strip() if r.patient_id else r.patient_id,
             "visit_date": r.visit_date,
             "record_text": r.text,
             "vocab_term_id": c.vocab_term_id,
             "domain_id": c.domain_id,
             "vocab_term_name": c.vocab_term_name,
             "mapping_status": m.status,
+            "linked_value": (lc.title if lc else lt.value) if lt else None,
         }
-        for st, r, c, m in results
+        for st, r, c, m, lt, lc in results
     ]
 
 
@@ -264,15 +273,22 @@ def build_omop_cdm_zip(
         for r in domain_rows["Measurement"]:
             row_id += 1
             d = _date_str(r["linked_visit_date"] or r["visit_date"])
+            lv = r.get("linked_value")
+            try:
+                value_as_number = float(lv) if lv is not None else None
+            except (ValueError, TypeError):
+                value_as_number = None
             table_rows.append(
                 [row_id, r["patient_id"],
-                 r["vocab_term_id"], d, EHR_TYPE_CONCEPT_ID]
+                 r["vocab_term_id"], d, EHR_TYPE_CONCEPT_ID,
+                 value_as_number, lv or ""]
             )
         csvs["measurement.csv"] = _write_csv(
             table_rows,
             ["measurement_id", "person_id",
              "measurement_concept_id", "measurement_date",
-             "measurement_type_concept_id"],
+             "measurement_type_concept_id",
+             "value_as_number", "value_source_value"],
         )
 
     # Observation (domain)
@@ -281,15 +297,23 @@ def build_omop_cdm_zip(
         for r in domain_rows["Observation"]:
             row_id += 1
             d = _date_str(r["linked_visit_date"] or r["visit_date"])
+            lv = r.get("linked_value")
+            try:
+                value_as_number = float(lv) if lv is not None else None
+            except (ValueError, TypeError):
+                value_as_number = None
+            value_as_string = lv if lv and value_as_number is None else ""
             table_rows.append(
                 [row_id, r["patient_id"],
-                 r["vocab_term_id"], d, EHR_TYPE_CONCEPT_ID]
+                 r["vocab_term_id"], d, EHR_TYPE_CONCEPT_ID,
+                 value_as_number, value_as_string, lv or ""]
             )
         csvs["observation.csv"] = _write_csv(
             table_rows,
             ["observation_id", "person_id",
              "observation_concept_id", "observation_date",
-             "observation_type_concept_id"],
+             "observation_type_concept_id",
+             "value_as_number", "value_as_string", "value_source_value"],
         )
 
     # Device

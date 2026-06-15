@@ -82,9 +82,11 @@ export default function DatasetConceptMapping() {
       try {
         const data = await api.getDataset(parseInt(datasetId));
         setDatasetName(data.dataset.name);
-        setLabels(data.dataset.labels);
-        if (data.dataset.labels.length > 0) {
-          setSelectedLabel(data.dataset.labels[0]);
+        const valueLabels = new Set(data.dataset.label_relations.map((r: { to_label: string }) => r.to_label));
+        const filteredLabels = data.dataset.labels.filter((l: string) => !valueLabels.has(l));
+        setLabels(filteredLabels);
+        if (filteredLabels.length > 0) {
+          setSelectedLabel(filteredLabels[0]);
         }
         setLabelsLoaded(true);
       } catch (err) {

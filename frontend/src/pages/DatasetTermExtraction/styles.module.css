@@ -361,6 +361,23 @@
   white-space: pre-wrap;
   overflow-wrap: break-word;
   word-break: break-word;
+  position: relative;
+}
+
+.link-arrow-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 2;
+}
+
+.highlighted-term--arc-hover {
+  outline: 2px solid currentColor;
+  outline-offset: 1.5px;
 }
 
 /* Terms Panel */
@@ -503,6 +520,31 @@
   outline: 2px solid #11415e;
   outline-offset: 1.2px;
   border-radius: 2px;
+}
+
+/* Link mode states for text spans */
+.highlighted-term--link-from {
+  outline: 2px solid #f59e0b;
+  outline-offset: 1.2px;
+  cursor: pointer;
+}
+
+.highlighted-term--linkable {
+  outline: 2px solid #94a3b8;
+  outline-offset: 1.2px;
+  cursor: pointer;
+}
+
+.highlighted-term--already-linked {
+  outline: 2px solid #1e293b;
+  outline-offset: 1.2px;
+  cursor: pointer;
+}
+
+.highlighted-term--not-linkable {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 /* Terms List */
@@ -1076,6 +1118,128 @@
   padding: 20px;
 }
 
+/* Label section header with Link button */
+.label-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.label-section__header .section-title {
+  margin: 0;
+}
+
+/* Link mode indicator banner */
+.link-mode-banner {
+  padding: 6px 10px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #1e40af;
+  margin-bottom: 8px;
+}
+
+/* Annotation item in link mode */
+.annotation-item--link-from {
+  background: #fefce8;
+  border-color: #f59e0b;
+}
+
+.annotation-item--linkable {
+  background: #f0fdf4;
+  border-color: #86efac;
+  cursor: pointer;
+}
+
+.annotation-item--linkable:hover {
+  background: #dcfce7;
+  border-color: #4ade80;
+}
+
+.annotation-item--not-linkable {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.annotation-item--already-linked {
+  background: #fff7ed;
+  border-color: #fb923c;
+  cursor: pointer;
+}
+
+.annotation-item--already-linked:hover {
+  background: #ffedd5;
+  border-color: #ea580c;
+}
+
+/* Link rows under an annotation item */
+.annotation-item__links {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.annotation-link-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.annotation-link-row__direction {
+  font-size: 10px;
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+.annotation-link-row__value {
+  font-weight: 600;
+  color: #374151;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100px;
+}
+
+.annotation-link-row__delete {
+  background: none;
+  border: none;
+  color: #d1d5db;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 1px 4px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: color 0.12s;
+}
+
+.annotation-link-row__delete:hover {
+  color: #dc2626;
+}
+
+/* Highlighted term with link badge (in read-only text view) */
+.highlighted-term {
+  position: relative;
+}
+
+.highlighted-term__link-badge {
+  position: absolute;
+  top: -7px;
+  right: -5px;
+  font-size: 9px;
+  line-height: 1;
+  cursor: default;
+  user-select: none;
+  z-index: 1;
+}
+
 /* Annotatable Text */
 .annotatable-text {
   font-size: 14px;
@@ -1092,6 +1256,11 @@
 .annotatable-text--annotating {
   cursor: text;
   user-select: text;
+}
+
+.annotatable-text--link-mode {
+  cursor: default;
+  user-select: none;
 }
 
 .annotatable-text--annotating::selection,

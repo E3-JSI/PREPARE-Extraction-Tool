@@ -1,4 +1,6 @@
-# PREPARE Extraction Tool
+<p align="center">
+  <img src="frontend/src/assets/images/logo.svg" alt="PREPARE Extraction Tool" width="400"/>
+</p>
 
 PREPARE Extraction Tool is an application to help create mappings between coding systems and the Vocabulary standard concepts.
 The tool is an adaptation/extension of the OHDSI Usagi tool, focusing on extracting relevant medical terms

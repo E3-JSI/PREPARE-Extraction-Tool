@@ -6,6 +6,7 @@ from typing import List
 import time
 import json
 from pathlib import Path
+from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlmodel import Session, select
@@ -47,6 +48,9 @@ from app.models_db import (
     TrainingRun,
     TrainingEvaluation,
 )
+from app.library.record_processing import auto_link_entities_for_record, link_dates_for_record
+from app.models_db import ExtractionJob, Record, SourceTerm
+
 from app.routes.v1.auth import get_current_user
 from app.schemas import (
     ExtractionJobStartResponse,
@@ -70,6 +74,7 @@ router = APIRouter(tags=["BioNER"])
 @router.post("/extract", response_model=List[Entity])
 def extract_entities(
     request: NERRequest,
+    current_user: User = Depends(get_current_user),
 ):
     """
     Extract named entities from medical text using the BioNER service.
@@ -257,7 +262,7 @@ def extract_entities_from_record(
         db.flush()
 
         link_dates_for_record(db, record, dataset)
-
+        auto_link_entities_for_record(db, record, dataset)
         db.commit()
 
     return MessageOutput(
@@ -295,11 +300,20 @@ def extract_entities_from_records(
             detail="Not authorized to access this dataset",
         )
 
-    records = db.exec(
-        select(Record)
-        .where(Record.dataset_id == dataset_id)
-    ).all()
+    active_job = db.exec(
+        select(ExtractionJob)
+        .where(ExtractionJob.dataset_id == dataset_id)
+        .where(
+            (ExtractionJob.status == "pending") | (ExtractionJob.status == "running")
+        )
+    ).first()
+    if active_job is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An extraction job is already running for this dataset",
+        )
 
+    records = db.exec(select(Record).where(Record.dataset_id == dataset_id)).all()
     if not records:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -371,6 +385,44 @@ def extract_entities_from_records(
         dataset_id=dataset_id,
         total=total,
         status=job.status,
+    )
+
+
+@router.get(
+    "/{dataset_id}/records/extract/active",
+    response_model=Optional[ExtractionJobStatusResponse],
+)
+def get_active_extraction_job(
+    dataset_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Return the latest pending/running extraction job for the dataset, or null if none."""
+    dataset = db.get(Dataset, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found")
+    if dataset.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to access this dataset")
+
+    job = db.exec(
+        select(ExtractionJob)
+        .where(ExtractionJob.dataset_id == dataset_id)
+        .where(
+            (ExtractionJob.status == "pending") | (ExtractionJob.status == "running")
+        )
+        .order_by(ExtractionJob.created_at.desc())
+    ).first()
+
+    if job is None:
+        return None
+
+    return ExtractionJobStatusResponse(
+        job_id=job.id,
+        dataset_id=job.dataset_id,
+        total=job.total,
+        completed=job.completed,
+        status=job.status,
+        error_message=job.error_message,
     )
 
 
@@ -989,6 +1041,7 @@ def run_dataset_extraction_job(job_id: int, dataset_id: int, labels: List[str],e
                 session.add_all(new_terms)
                 session.flush()
                 link_dates_for_record(session, record, dataset)
+                auto_link_entities_for_record(session, record, dataset)
 
             job.completed += 1
             job.updated_at = datetime.now(timezone.utc)

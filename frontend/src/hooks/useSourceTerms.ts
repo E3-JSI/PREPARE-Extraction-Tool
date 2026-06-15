@@ -5,6 +5,11 @@ import {
   deleteSourceTerm as deleteSourceTermAPI,
   updateSourceTerm as updateSourceTermAPI,
 } from "@/api";
+import {
+  createSourceTermLink as createSourceTermLinkAPI,
+  deleteSourceTermLink as deleteSourceTermLinkAPI,
+  getRecordSourceTerms,
+} from "@/api/sourceTerms";
 
 interface UseSourceTermsParams {
   datasetId: number;
@@ -53,7 +58,10 @@ export function useSourceTerms({
   const updateSourceTermLabel = useCallback(
     async (termId: number, newLabel: string) => {
       const response = await updateSourceTermAPI(termId, { label: newLabel });
-      setSelectedRecordTerms((prev) => prev.map((t) => (t.id === termId ? response.source_term : t)));
+      // Preserve existing links since the PATCH response doesn't include them
+      setSelectedRecordTerms((prev) =>
+        prev.map((t) => (t.id === termId ? { ...response.source_term, links: t.links } : t))
+      );
       return response.source_term;
     },
     [setSelectedRecordTerms]
@@ -64,10 +72,35 @@ export function useSourceTerms({
       // Send null to clear date, or YYYY-MM-DD string to set
       const payload = { linked_visit_date: newDate } as any;
       const response = await updateSourceTermAPI(termId, payload);
-      setSelectedRecordTerms((prev) => prev.map((t) => (t.id === termId ? response.source_term : t)));
+      // Preserve existing links since the PATCH response doesn't include them
+      setSelectedRecordTerms((prev) =>
+        prev.map((t) => (t.id === termId ? { ...response.source_term, links: t.links } : t))
+      );
       return response.source_term;
     },
     [setSelectedRecordTerms]
+  );
+
+  const addLink = useCallback(
+    async (fromTermId: number, toTermId: number) => {
+      await createSourceTermLinkAPI(fromTermId, toTermId);
+      if (selectedRecordId) {
+        const refreshed = await getRecordSourceTerms(datasetId, selectedRecordId, 500);
+        setSelectedRecordTerms(refreshed.source_terms);
+      }
+    },
+    [datasetId, selectedRecordId, setSelectedRecordTerms]
+  );
+
+  const removeLink = useCallback(
+    async (linkId: number) => {
+      await deleteSourceTermLinkAPI(linkId);
+      if (selectedRecordId) {
+        const refreshed = await getRecordSourceTerms(datasetId, selectedRecordId, 500);
+        setSelectedRecordTerms(refreshed.source_terms);
+      }
+    },
+    [datasetId, selectedRecordId, setSelectedRecordTerms]
   );
 
   return {
@@ -75,5 +108,7 @@ export function useSourceTerms({
     removeSourceTerm,
     updateSourceTermLabel,
     updateSourceTermDate,
+    addLink,
+    removeLink,
   };
 }

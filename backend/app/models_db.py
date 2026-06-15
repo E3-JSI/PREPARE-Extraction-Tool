@@ -78,8 +78,8 @@ class Dataset(SQLModel, table=True):
     name: str
     uploaded: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_modified: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    # TODO: need to specify a structure for the labels
     labels: List[str] = Field(sa_column=Column(JSON))
+    label_relations: List[dict] = Field(default_factory=list, sa_column=Column(JSON, nullable=True))
     date_label: Optional[str] = Field(default=None, nullable=True)
     status: ProcessingStatus = Field(default=ProcessingStatus.PROCESSING, index=True)
     error_message: Optional[str] = None
@@ -355,6 +355,30 @@ class Concept(SQLModel, table=True):
         back_populates="concept",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
+
+
+class SourceTermLink(SQLModel, table=True):
+    """
+    Directed link between two source terms representing a 'has value' relationship.
+
+    E.g. a Diagnosis term linked to a Measurement term.
+    Both FKs cascade-delete so links are cleaned up when either term is removed.
+    """
+
+    __tablename__ = "source_term_link"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    from_term_id: int = Field(
+        foreign_key="source_term.id", ondelete="CASCADE", nullable=False, index=True
+    )
+    to_term_id: int = Field(
+        foreign_key="source_term.id", ondelete="CASCADE", nullable=False, index=True
+    )
+    dataset_id: int = Field(
+        foreign_key="dataset.id", ondelete="CASCADE", nullable=False, index=True
+    )
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class SourceToConceptMap(SQLModel, table=True):

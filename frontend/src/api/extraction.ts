@@ -30,3 +30,12 @@ export async function getDatasetExtractionStatus(
 export async function cancelDatasetExtraction(datasetId: number, jobId: string): Promise<MessageOutput> {
   return apiRequest<MessageOutput>(`/bioner/${datasetId}/records/extract/${jobId}/cancel`, { method: "POST" });
 }
+
+export async function getActiveExtractionJob(
+  datasetId: number
+): Promise<ExtractionJobStatusResponse | null> {
+  const result = await apiRequest<ExtractionJobStatusResponse | null>(
+    `/bioner/${datasetId}/records/extract/active`
+  );
+  return result ?? null;
+}

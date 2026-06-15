@@ -73,8 +73,12 @@ services:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
+      bioner:
+        condition: service_healthy
     env_file:
       - .env
+    volumes:
+      - ./backend/model:/root/.cache/huggingface
     environment:
       - EXTRACT_HOST=${EXTRACT_HOST:-http://bioner:${BIONER_PORT:-5600}}
       - ENVIRONMENT=${ENVIRONMENT}
@@ -144,6 +148,12 @@ services:
       - USE_GPU=${BIONER_USE_GPU}
       - ADAPTER_PATH=${BIONER_ADAPTER_PATH}
       - PROMPTS_PATH=${BIONER_PROMPTS_PATH}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${BIONER_PORT:-5600}/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 600s
     networks:
       - prepare-public
       - default

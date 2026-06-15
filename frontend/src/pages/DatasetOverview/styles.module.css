@@ -161,6 +161,31 @@
   text-align: center;
 }
 
+/* Extraction progress banner */
+.extraction-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.extraction-banner__label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1e40af;
+  white-space: nowrap;
+}
+
+.extraction-banner__bar {
+  flex: 1;
+  min-width: 200px;
+}
+
 /* Responsive Design */
 @media (max-width: 1200px) {
   .workflow__grid {

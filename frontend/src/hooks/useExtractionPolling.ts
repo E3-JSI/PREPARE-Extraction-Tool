@@ -5,6 +5,7 @@ import {
   extractRecordTerms as extractRecordTermsAPI,
   extractDatasetTerms as extractDatasetTermsAPI,
   getDatasetExtractionStatus as getDatasetExtractionStatusAPI,
+  getActiveExtractionJob as getActiveExtractionJobAPI,
   cancelDatasetExtraction as cancelDatasetExtractionAPI,
   deleteDatasetExtractedTerms as deleteDatasetExtractedTermsAPI,
 } from "@/api";
@@ -41,6 +42,7 @@ export function useExtractionPolling({
   const cancelledRef = useRef(false);
   const latestSelectedRecordIdRef = useRef<number | null>(null);
   const extractionStorageKey = `extractionJob-${datasetId}`;
+  const pollJobRef = useRef<((id: string) => Promise<{ status: string }>) | null>(null);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -105,11 +107,16 @@ export function useExtractionPolling({
 
         return { status: lastStatus };
       } finally {
-        setIsExtractingDataset(false);
-        setIsCancellingExtraction(false);
-        setExtractionJobId(null);
-        setExtractionProgress(null);
-        localStorage.removeItem(extractionStorageKey);
+        // Only clean up state and localStorage when the component is still mounted.
+        // If cancelledRef.current is true the component unmounted (navigation) — keep
+        // localStorage so the job can be resumed when the user comes back.
+        if (!cancelledRef.current) {
+          setIsExtractingDataset(false);
+          setIsCancellingExtraction(false);
+          setExtractionJobId(null);
+          setExtractionProgress(null);
+          localStorage.removeItem(extractionStorageKey);
+        }
       }
     },
     [datasetId, selectedRecordId, setSelectedRecordTerms, fetchStats, refreshRecords, extractionStorageKey]
@@ -142,12 +149,19 @@ export function useExtractionPolling({
     }
 
     setExtractionProgress({ completed: 0, total: 0, status: "pending" });
-    const { job_id } = await extractDatasetTermsAPI(datasetId, dataset.labels);
-    if (!job_id) {
-      throw new Error("Extraction job did not return an ID");
+    try {
+      const { job_id } = await extractDatasetTermsAPI(datasetId, dataset.labels);
+      if (!job_id) throw new Error("Extraction job did not return an ID");
+      return await pollExtractionJob(job_id);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("already running")) {
+        const active = await getActiveExtractionJobAPI(datasetId);
+        if (active?.job_id) {
+          return await pollExtractionJob(String(active.job_id));
+        }
+      }
+      throw err;
     }
-
-    return await pollExtractionJob(job_id);
   }, [datasetId, dataset, pollExtractionJob]);
 
   const cancelDatasetExtraction = useCallback(async () => {
@@ -172,15 +186,20 @@ export function useExtractionPolling({
     return res;
   }, [datasetId, selectedRecordId, setSelectedRecordTerms, fetchStats, refreshRecords]);
 
-  // Resume polling if a job was running when the user navigated away
+  // Keep ref in sync so the mount-only effect always calls the latest version
+  useEffect(() => {
+    pollJobRef.current = pollExtractionJob;
+  });
+
+  // Resume polling once on mount if a job was active when the user navigated away.
+  // Using an empty dep array is intentional — we only want this to fire on mount.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const savedJobId = localStorage.getItem(extractionStorageKey);
-    if (savedJobId && !isExtractingDataset) {
-      pollExtractionJob(savedJobId).catch(() => {
-        // Polling failure is non-critical — job status will be stale
-      });
+    if (savedJobId && pollJobRef.current) {
+      pollJobRef.current(savedJobId).catch(() => {});
     }
-  }, [extractionStorageKey, isExtractingDataset, pollExtractionJob]);
+  }, []);
 
   return {
     isExtracting,

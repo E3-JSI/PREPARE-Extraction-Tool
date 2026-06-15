@@ -758,7 +758,7 @@ def add_concept(
         vocabulary_id=vocabulary_id,
         vocab_term_id=concept.vocab_term_id,
         vocab_term_name=concept.vocab_term_name,
-        domain_id=concept.vocab_term_name,
+        domain_id=concept.domain_id,
         concept_class_id=concept.concept_class_id,
         standard_concept=concept.standard_concept,
         concept_code=concept.concept_code,

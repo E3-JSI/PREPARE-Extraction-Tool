@@ -151,6 +151,121 @@
   color: #144d70;
 }
 
+/* ---- Label relations ---- */
+
+.upload__checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.upload__checkbox-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #11415e;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.upload__checkbox-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #374151;
+}
+
+.upload__relations {
+  margin-bottom: 20px;
+  padding: 16px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.upload__relations-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #11415e;
+  margin: 0 0 4px;
+}
+
+.upload__relation-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.upload__relation-select {
+  flex: 1;
+  padding: 8px 10px;
+  font-size: 13px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: #ffffff;
+  font-family: inherit;
+  color: #374151;
+  box-sizing: border-box;
+}
+
+.upload__relation-select:focus {
+  outline: none;
+  border-color: #11415e;
+  box-shadow: 0 0 0 2px rgba(17, 65, 94, 0.12);
+}
+
+.upload__relation-op {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.upload__relation-remove {
+  background: none;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.upload__relation-remove:hover {
+  color: #dc2626;
+}
+
+.upload__relation-add {
+  align-self: flex-start;
+  background: none;
+  border: 1px dashed #d1d5db;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #6b7280;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.upload__relation-add:hover:not(:disabled) {
+  border-color: #11415e;
+  color: #11415e;
+}
+
+.upload__relation-add:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 @media (max-width: 900px) {
   .upload__content {
     grid-template-columns: 1fr;

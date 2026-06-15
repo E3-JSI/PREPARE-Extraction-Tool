@@ -8,7 +8,7 @@ from typing import List, Optional, Sequence, Tuple
 from sqlmodel import Session, delete, select
 
 from app.library.sentence_segmenter import iter_sentence_spans
-from app.models_db import Dataset, Record, SentenceSegment, SourceTerm
+from app.models_db import Dataset, Record, SentenceSegment, SourceTerm, SourceTermLink
 
 
 _MULTI_SPACE = re.compile(r"\s+")
@@ -322,3 +322,53 @@ def link_dates_for_record(
                     entity.linked_visit_date = fallback_date
 
     db.flush()
+
+
+def auto_link_entities_for_record(db: Session, record: Record, dataset: Dataset) -> None:
+    if not dataset.label_relations:
+        return
+
+    relation_map: dict[str, set[str]] = {}
+    for rel in dataset.label_relations:
+        relation_map.setdefault(rel["from_label"], set()).add(rel["to_label"])
+
+    terms = db.exec(
+        select(SourceTerm)
+        .where(SourceTerm.record_id == record.id)
+        .order_by(SourceTerm.start_position)
+    ).all()
+
+    if len(terms) < 2:
+        return
+
+    term_ids = [t.id for t in terms]
+    existing = {
+        (lnk.from_term_id, lnk.to_term_id)
+        for lnk in db.exec(
+            select(SourceTermLink).where(SourceTermLink.from_term_id.in_(term_ids))
+        ).all()
+    }
+
+    new_links = []
+    for i, term in enumerate(terms[:-1]):
+        if term.label not in relation_map:
+            continue
+        next_term = terms[i + 1]
+        if term.sentence_segment_id != next_term.sentence_segment_id:
+            continue
+        if next_term.label not in relation_map[term.label]:
+            continue
+        if (term.id, next_term.id) in existing:
+            continue
+        existing.add((term.id, next_term.id))
+        new_links.append(
+            SourceTermLink(
+                from_term_id=term.id,
+                to_term_id=next_term.id,
+                dataset_id=dataset.id,
+            )
+        )
+
+    if new_links:
+        db.add_all(new_links)
+        db.flush()

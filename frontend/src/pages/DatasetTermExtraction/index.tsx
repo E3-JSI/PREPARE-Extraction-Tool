@@ -71,6 +71,8 @@ const DatasetTermExtraction: React.FC = () => {
     removeSourceTerm,
     updateSourceTermLabel,
     updateSourceTermDate,
+    addLink,
+    removeLink,
     extractTermsForDataset,
     cancelDatasetExtraction,
     deleteExtractedTermsForDataset,
@@ -215,6 +217,28 @@ const DatasetTermExtraction: React.FC = () => {
       }
     },
     [updateSourceTermDate]
+  );
+
+  const handleCreateLink = useCallback(
+    async (fromTermId: number, toTermId: number) => {
+      try {
+        await addLink(fromTermId, toTermId);
+      } catch (err) {
+        console.error("Failed to create link:", err);
+      }
+    },
+    [addLink]
+  );
+
+  const handleDeleteLink = useCallback(
+    async (linkId: number) => {
+      try {
+        await removeLink(linkId);
+      } catch (err) {
+        console.error("Failed to delete link:", err);
+      }
+    },
+    [removeLink]
   );
 
   // Navigation handlers for annotation sidebar
@@ -650,6 +674,7 @@ const DatasetTermExtraction: React.FC = () => {
           isOpen={isAnnotating}
           text={selectedRecord?.text ?? ""}
           labels={dataset?.labels ?? []}
+          labelRelations={dataset?.label_relations ?? []}
           selectedLabel={selectedLabel}
           onSelectLabel={setSelectedLabel}
           annotations={selectedRecordTerms}
@@ -659,6 +684,8 @@ const DatasetTermExtraction: React.FC = () => {
           onDeleteAnnotation={handleDeleteAnnotation}
           onUpdateAnnotationLabel={handleUpdateAnnotationLabel}
           onUpdateAnnotationDate={handleUpdateAnnotationDate}
+          onCreateLink={handleCreateLink}
+          onDeleteLink={handleDeleteLink}
           onClose={handleCloseAnnotation}
           onPreviousRecord={handlePreviousRecord}
           onNextRecord={handleNextRecord}

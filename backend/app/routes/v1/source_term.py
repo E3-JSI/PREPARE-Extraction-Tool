@@ -10,11 +10,14 @@ from app.core.database import (
     Cluster,
     Record,
 )
+from app.models_db import SourceTermLink
 from app.routes.v1.auth import get_current_user
 from app.schemas import (
     MessageOutput,
     SourceTermOutput,
     SourceTermUpdate,
+    SourceTermLinkCreate,
+    SourceTermLinkResponse,
     BatchTermToClusterMapping,
 )
 from app.library.record_processing import link_dates_for_record
@@ -281,6 +284,116 @@ def delete_source_term(
     db.commit()
 
     return MessageOutput(message="Source term deleted successfully")
+
+
+# ================================================
+# Source term link routes
+# ================================================
+
+
+@router.post(
+    "/links",
+    response_model=SourceTermLinkResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a link between two source terms",
+)
+def create_source_term_link(
+    body: SourceTermLinkCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    from_term = db.get(SourceTerm, body.from_term_id)
+    to_term = db.get(SourceTerm, body.to_term_id)
+
+    if from_term is None or to_term is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Source term not found"
+        )
+    if from_term.record_id != to_term.record_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Both terms must belong to the same record",
+        )
+
+    record = db.get(Record, from_term.record_id)
+    dataset = db.get(Dataset, record.dataset_id)
+    verify_dataset_ownership(dataset, current_user.id)
+
+    # Validate the label pair is defined in dataset.label_relations
+    relations = dataset.label_relations or []
+    valid_pair = any(
+        (r["from_label"] == from_term.label and r["to_label"] == to_term.label)
+        or (r["from_label"] == to_term.label and r["to_label"] == from_term.label)
+        for r in relations
+    )
+    if not valid_pair:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"No relation defined between labels '{from_term.label}' and '{to_term.label}'",
+        )
+
+    # Normalise direction: from_label must be the relation's from_label
+    canonical_from, canonical_to = from_term, to_term
+    for r in relations:
+        if r["from_label"] == to_term.label and r["to_label"] == from_term.label:
+            canonical_from, canonical_to = to_term, from_term
+            break
+
+    # Prevent duplicate links
+    existing = db.exec(
+        select(SourceTermLink)
+        .where(SourceTermLink.from_term_id == canonical_from.id)
+        .where(SourceTermLink.to_term_id == canonical_to.id)
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Link already exists"
+        )
+
+    link = SourceTermLink(
+        from_term_id=canonical_from.id,
+        to_term_id=canonical_to.id,
+        dataset_id=dataset.id,
+    )
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+
+    return SourceTermLinkResponse(
+        id=link.id,
+        from_term_id=canonical_from.id,
+        to_term_id=canonical_to.id,
+        from_term_value=canonical_from.value,
+        to_term_value=canonical_to.value,
+        from_term_label=canonical_from.label,
+        to_term_label=canonical_to.label,
+    )
+
+
+@router.delete(
+    "/links/{link_id}",
+    response_model=MessageOutput,
+    status_code=status.HTTP_200_OK,
+    summary="Delete a source term link",
+)
+def delete_source_term_link(
+    link_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    link = db.get(SourceTermLink, link_id)
+    if link is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Link not found"
+        )
+
+    dataset = db.get(Dataset, link.dataset_id)
+    verify_dataset_ownership(dataset, current_user.id)
+
+    db.delete(link)
+    db.commit()
+
+    return MessageOutput(message="Link deleted successfully")
 
 
 # ================================================

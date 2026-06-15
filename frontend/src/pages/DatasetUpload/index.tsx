@@ -9,10 +9,9 @@ import { useDatasets } from "@/hooks/useDatasets";
 import { usePageTitle } from "@/hooks/usePageTitle";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faArrowLeft } from "@fortawesome/free-solid-svg-icons";
+import type { LabelRelation } from "@/types";
 
 import styles from "./styles.module.css";
-
-// Note: File parsing is handled by the backend
 
 // ================================================
 // Component
@@ -28,6 +27,8 @@ const DatasetUpload = () => {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [dateLabel, setDateLabel] = useState("");
+  const [hasRelations, setHasRelations] = useState(false);
+  const [labelRelations, setLabelRelations] = useState<LabelRelation[]>([]);
 
   const { uploadDataset } = useDatasets();
   const navigate = useNavigate();
@@ -37,6 +38,26 @@ const DatasetUpload = () => {
       setDateLabel("");
     }
   }, [labels, dateLabel]);
+
+  // Drop relations whose labels no longer exist when labels change
+  useEffect(() => {
+    setLabelRelations((prev) =>
+      prev.filter((r) => labels.includes(r.from_label) && labels.includes(r.to_label))
+    );
+  }, [labels]);
+
+  const addRelation = useCallback(() => {
+    if (labels.length < 2) return;
+    setLabelRelations((prev) => [...prev, { from_label: labels[0], to_label: labels[1] }]);
+  }, [labels]);
+
+  const updateRelation = useCallback((index: number, field: "from_label" | "to_label", value: string) => {
+    setLabelRelations((prev) => prev.map((r, i) => (i === index ? { ...r, [field]: value } : r)));
+  }, []);
+
+  const removeRelation = useCallback((index: number) => {
+    setLabelRelations((prev) => prev.filter((_, i) => i !== index));
+  }, []);
 
   const handleFileSelect = useCallback(
     (selectedFile: File) => {
@@ -79,6 +100,7 @@ const DatasetUpload = () => {
         {
           name: datasetName.trim(),
           labels: labels.join(","),
+          label_relations: hasRelations && labelRelations.length > 0 ? JSON.stringify(labelRelations) : undefined,
           file: file,
           date_label: dateLabel || undefined,
         },
@@ -141,6 +163,75 @@ const DatasetUpload = () => {
                   disabled={isUploading}
                 />
               </div>
+
+              {/* ---- Relations checkbox ---- */}
+              <label className={styles["upload__checkbox-row"]}>
+                <input
+                  type="checkbox"
+                  checked={hasRelations}
+                  onChange={(e) => {
+                    setHasRelations(e.target.checked);
+                    if (!e.target.checked) setLabelRelations([]);
+                  }}
+                  disabled={isUploading || labels.length < 2}
+                />
+                <span className={styles["upload__checkbox-label"]}>Some labels are related to each other</span>
+              </label>
+
+              {/* ---- Relations builder ---- */}
+              {hasRelations && (
+                <div className={styles["upload__relations"]}>
+                  <p className={styles["upload__relations-title"]}>Label relationships</p>
+                  {labelRelations.map((rel, idx) => (
+                    <div key={idx} className={styles["upload__relation-row"]}>
+                      <select
+                        className={styles["upload__relation-select"]}
+                        value={rel.from_label}
+                        onChange={(e) => updateRelation(idx, "from_label", e.target.value)}
+                        disabled={isUploading}
+                      >
+                        {labels.map((l) => (
+                          <option key={l} value={l}>
+                            {l}
+                          </option>
+                        ))}
+                      </select>
+                      <span className={styles["upload__relation-op"]}>has value</span>
+                      <select
+                        className={styles["upload__relation-select"]}
+                        value={rel.to_label}
+                        onChange={(e) => updateRelation(idx, "to_label", e.target.value)}
+                        disabled={isUploading}
+                      >
+                        {labels
+                          .filter((l) => l !== rel.from_label)
+                          .map((l) => (
+                            <option key={l} value={l}>
+                              {l}
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        type="button"
+                        className={styles["upload__relation-remove"]}
+                        onClick={() => removeRelation(idx)}
+                        disabled={isUploading}
+                        title="Remove relationship"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    className={styles["upload__relation-add"]}
+                    onClick={addRelation}
+                    disabled={isUploading || labels.length < 2}
+                  >
+                    + Add relationship
+                  </button>
+                </div>
+              )}
 
               <div className={styles["upload__field"]}>
                 <label htmlFor="dateLabel" className={styles["upload__label"]}>
@@ -233,6 +324,11 @@ const DatasetUpload = () => {
                 <strong>Date label:</strong> (optional) Pick which label corresponds to dates so extracted terms can
                 inherit the right timestamp. Leave it blank to fall back to each record&rsquo;s visit_date or the upload
                 time.
+              </p>
+              <p>
+                <strong>Label relationships:</strong> (optional) Check this if some labels are semantically related.
+                For each pair you define, annotators will be able to link individual annotations of those labels to each
+                other using the &ldquo;Link&rdquo; button in the annotation panel.
               </p>
               <p>Maximum file size: 2GB. Supported formats: .csv, .json</p>
             </div>

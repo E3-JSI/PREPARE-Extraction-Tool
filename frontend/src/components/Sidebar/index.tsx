@@ -11,19 +11,20 @@ export interface SidebarProps {
   title: string;
   width?: string;
   children: React.ReactNode;
+  disableEscapeClose?: boolean;
 }
 
-const Sidebar = ({ isOpen, onClose, title, width = "400px", children }: SidebarProps) => {
+const Sidebar = ({ isOpen, onClose, title, width = "400px", children, disableEscapeClose = false }: SidebarProps) => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && isOpen) {
+      if (e.key === "Escape" && isOpen && !disableEscapeClose) {
         onClose();
       }
     };
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, disableEscapeClose]);
 
   useEffect(() => {
     if (isOpen) {

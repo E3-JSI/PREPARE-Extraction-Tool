@@ -279,6 +279,8 @@ async def get_current_user(
     user = get_user(db, token_data.username)
     if user is None:
         raise credentials_exception
+    if user.disabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
     return user
 
 

@@ -3,13 +3,18 @@ import { useEffect, useState } from "react";
 import classNames from "classnames";
 import Layout from "@/components/Layout";
 import { usePageTitle } from "@/hooks/usePageTitle";
+import { useToast } from "@/hooks/useToast";
 import type { DatasetOverviewOutput, Vocabulary } from "@/types";
 import * as api from "@/api";
 import Button from "@/components/Button";
 import StatCard from "@/components/StatCard";
 import WorkflowCard from "@/components/WorkflowCard";
+import ProgressBar from "@/components/ProgressBar";
+import ConfirmDialog from "@/components/ConfirmDialog";
+import { ToastContainer } from "@/components/Toast/ToastContainer";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faObjectGroup, faMapLocationDot, faFilePen, faArrowLeft } from "@fortawesome/free-solid-svg-icons";
+import { useDatasetExtractionJob } from "@/hooks/useDatasetExtractionJob";
 
 import styles from "./styles.module.css";
 
@@ -44,7 +49,18 @@ const DatasetOverview = () => {
   const [isMappingAll, setIsMappingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const toast = useToast();
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    variant?: "danger" | "warning" | "info";
+  }>({ isOpen: false, title: "", message: "", onConfirm: () => {} });
+
   const parsedDatasetId = datasetId ? parseInt(datasetId, 10) : 0;
+
+  const extraction = useDatasetExtractionJob(parsedDatasetId);
 
   usePageTitle(overview?.dataset.name || "Dataset Overview");
 
@@ -80,76 +96,89 @@ const DatasetOverview = () => {
     fetchVocabularies();
   }, []);
 
-  const handleStartMapping = async () => {
+  const handleStartMapping = () => {
     if (!overview || vocabularies.length === 0) return;
 
-    const confirmed = window.confirm(
-      "This will auto-map all unmapped clusters using vector search across all labels. Continue?"
-    );
+    setConfirmDialog({
+      isOpen: true,
+      title: "Start Auto-Mapping",
+      message: "This will auto-map all unmapped clusters using vector search across all labels. Continue?",
+      variant: "warning",
+      onConfirm: async () => {
+        setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+        try {
+          setIsMappingAll(true);
+          const vocabIds = vocabularies.map((v) => v.id);
+          const response = await api.autoMapAllClusters(parsedDatasetId, {
+            vocabulary_ids: vocabIds,
+            use_cluster_terms: true,
+            search_type: "vector",
+          });
+          toast.success(`Auto-mapping complete! Mapped: ${response.mapped_count}, Failed: ${response.failed_count}`);
+          const data = await api.getDatasetOverview(parsedDatasetId);
+          setOverview(data);
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : "Failed to start mapping");
+        } finally {
+          setIsMappingAll(false);
+        }
+      },
+    });
+  };
 
-    if (!confirmed) return;
+  const handleExtractAll = () => {
+    if (!overview || extraction.isRunning) return;
 
+    setConfirmDialog({
+      isOpen: true,
+      title: "Extract All Terms",
+      message: `This will extract terms from all ${overview.stats.total_records} record${overview.stats.total_records !== 1 ? "s" : ""} in the dataset. This may take several minutes. Continue?`,
+      variant: "warning",
+      onConfirm: async () => {
+        setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+        try {
+          await extraction.startExtraction(overview.dataset.labels);
+          toast.success("Terms extracted successfully for all records");
+          const data = await api.getDatasetOverview(parsedDatasetId);
+          setOverview(data);
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : "Failed to extract terms");
+        }
+      },
+    });
+  };
+
+  const handleCancelExtraction = async () => {
     try {
-      setIsMappingAll(true);
-      const vocabIds = vocabularies.map((v) => v.id);
-      const response = await api.autoMapAllClusters(parsedDatasetId, {
-        vocabulary_ids: vocabIds,
-        use_cluster_terms: true,
-        search_type: "vector",
-      });
-      alert(`Auto-mapping complete! Mapped: ${response.mapped_count}, Failed: ${response.failed_count}`);
-      // Refresh overview
-      const data = await api.getDatasetOverview(parsedDatasetId);
-      setOverview(data);
+      await extraction.cancelExtraction();
+      toast.warning("Extraction was cancelled");
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Failed to start mapping";
-      alert(`Error: ${errorMessage}`);
-    } finally {
-      setIsMappingAll(false);
+      toast.error(err instanceof Error ? err.message : "Failed to cancel extraction");
     }
   };
 
-  const handleExtractAll = async () => {
-    if (!overview) return;
-
-    const confirmed = window.confirm(
-      `This will extract terms from all ${overview.stats.total_records} record${overview.stats.total_records !== 1 ? "s" : ""} in the dataset. This may take several minutes. Continue?`
-    );
-
-    if (!confirmed) return;
-
-    try {
-      await api.extractDatasetTerms(parsedDatasetId, overview.dataset.labels);
-      alert("Term extraction started successfully");
-      // Refresh overview
-      const data = await api.getDatasetOverview(parsedDatasetId);
-      setOverview(data);
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Failed to extract terms";
-      alert(`Error: ${errorMessage}`);
-    }
-  };
-
-  const handleAutoClustering = async () => {
+  const handleAutoClustering = () => {
     if (!overview || overview.dataset.labels.length === 0) return;
 
-    const label = overview.dataset.labels[0]; // Use first label
-    const confirmed = window.confirm(
-      `This will automatically cluster all extracted terms for the label "${label}". Continue?`
-    );
+    const labels = overview.dataset.labels;
 
-    if (!confirmed) return;
-
-    try {
-      await api.rebuildClusters(parsedDatasetId, label);
-      alert("Auto-clustering completed successfully");
-      // Refresh overview
-      const data = await api.getDatasetOverview(parsedDatasetId);
-      setOverview(data);
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Failed to auto-cluster";
-      alert(`Error: ${errorMessage}`);
-    }
+    setConfirmDialog({
+      isOpen: true,
+      title: "Auto-Cluster Terms",
+      message: `This will automatically cluster all extracted terms across all ${labels.length} label${labels.length !== 1 ? "s" : ""}. Continue?`,
+      variant: "warning",
+      onConfirm: async () => {
+        setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+        try {
+          await Promise.all(labels.map((label) => api.rebuildClusters(parsedDatasetId, label)));
+          toast.success("Auto-clustering completed successfully");
+          const data = await api.getDatasetOverview(parsedDatasetId);
+          setOverview(data);
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : "Failed to auto-cluster");
+        }
+      },
+    });
   };
 
   if (!parsedDatasetId) {
@@ -231,6 +260,36 @@ const DatasetOverview = () => {
         {/* Workflow Section */}
         <div className={styles.workflow}>
           <h2 className={styles.workflow__title}>Workflow Steps</h2>
+
+          {extraction.isRunning && (
+            <div className={styles["extraction-banner"]}>
+              <span className={styles["extraction-banner__label"]}>
+                Extraction in progress
+                {extraction.progress && extraction.progress.total > 0
+                  ? `: ${extraction.progress.completed} / ${extraction.progress.total} records`
+                  : "…"}
+              </span>
+              <div className={styles["extraction-banner__bar"]}>
+                <ProgressBar
+                  progress={
+                    extraction.progress && extraction.progress.total > 0
+                      ? (extraction.progress.completed / extraction.progress.total) * 100
+                      : 0
+                  }
+                  showPercentage
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="small"
+                onClick={handleCancelExtraction}
+                disabled={extraction.isCancelling}
+              >
+                {extraction.isCancelling ? "Cancelling…" : "Cancel"}
+              </Button>
+            </div>
+          )}
+
           <div className={styles.workflow__grid}>
             {/* Term Extraction Card */}
             <WorkflowCard
@@ -241,10 +300,14 @@ const DatasetOverview = () => {
                 { label: "Total Records", value: overview.stats.total_records },
                 { label: "Terms Extracted", value: overview.stats.extracted_terms_count },
               ]}
-              progress={{
-                current: overview.stats.total_records - overview.stats.pending_review_count,
-                total: overview.stats.total_records,
-              }}
+              progress={
+                extraction.isRunning && extraction.progress && extraction.progress.total > 0
+                  ? { current: extraction.progress.completed, total: extraction.progress.total }
+                  : {
+                      current: overview.stats.total_records - overview.stats.pending_review_count,
+                      total: overview.stats.total_records,
+                    }
+              }
               actions={[
                 {
                   label: "View Records",
@@ -252,9 +315,10 @@ const DatasetOverview = () => {
                   variant: "primary",
                 },
                 {
-                  label: "Extract All",
+                  label: extraction.isRunning ? "Extract All (running…)" : "Extract All",
                   onClick: handleExtractAll,
                   variant: "secondary",
+                  disabled: extraction.isRunning,
                 },
               ]}
             />
@@ -307,11 +371,23 @@ const DatasetOverview = () => {
                   label: isMappingAll ? "Mapping..." : "Start Mapping",
                   onClick: handleStartMapping,
                   variant: "secondary",
+                  disabled: isMappingAll,
                 },
               ]}
             />
           </div>
         </div>
+
+        <ToastContainer toasts={toast.toasts} onDismiss={toast.dismissToast} />
+
+        <ConfirmDialog
+          isOpen={confirmDialog.isOpen}
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          variant={confirmDialog.variant}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog((prev) => ({ ...prev, isOpen: false }))}
+        />
       </div>
     </Layout>
   );

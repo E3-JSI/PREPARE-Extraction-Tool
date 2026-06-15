@@ -10,7 +10,7 @@ interface WorkflowCardProps {
   icon?: any;
   stats: Array<{ label: string; value: string | number }>;
   progress?: { current: number; total: number };
-  actions: Array<{ label: string; onClick: () => void; variant?: "primary" | "secondary" }>;
+  actions: Array<{ label: string; onClick: () => void; variant?: "primary" | "secondary"; disabled?: boolean }>;
 }
 
 const WorkflowCard = ({ title, description, icon, stats, progress, actions }: WorkflowCardProps) => {
@@ -59,6 +59,7 @@ const WorkflowCard = ({ title, description, icon, stats, progress, actions }: Wo
             onClick={action.onClick}
             variant={action.variant === "primary" ? "primary" : "outline"}
             className={styles["workflow-card__button"]}
+            disabled={action.disabled ?? false}
           >
             {action.label}
           </Button>

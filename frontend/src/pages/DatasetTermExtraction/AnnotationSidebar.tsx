@@ -11,7 +11,7 @@ import { getLabelColorClass } from "@/utils/labelColors";
 import { tryParseWithDateFns } from "@/utils/dateUtils";
 import AnnotatableText from "./AnnotatableText";
 
-import type { SourceTerm, SourceTermCreate } from "@/types";
+import type { SourceTerm, SourceTermCreate, LabelRelation, SourceTermLink } from "@/types";
 
 import styles from "./styles.module.css";
 
@@ -19,6 +19,7 @@ export interface AnnotationSidebarProps {
   isOpen: boolean;
   text: string;
   labels: string[];
+  labelRelations: LabelRelation[];
   selectedLabel: string | null;
   onSelectLabel: (label: string) => void;
   annotations: SourceTerm[];
@@ -28,6 +29,8 @@ export interface AnnotationSidebarProps {
   onDeleteAnnotation: (termId: number) => void;
   onUpdateAnnotationLabel?: (termId: number, newLabel: string) => void;
   onUpdateAnnotationDate?: (termId: number, newDate: string) => void;
+  onCreateLink: (fromTermId: number, toTermId: number) => void;
+  onDeleteLink: (linkId: number) => void;
   onClose: () => void;
   onPreviousRecord?: () => void;
   onNextRecord?: () => void;
@@ -42,6 +45,7 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
   isOpen,
   text,
   labels,
+  labelRelations,
   selectedLabel,
   onSelectLabel,
   annotations,
@@ -51,6 +55,8 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
   onDeleteAnnotation,
   onUpdateAnnotationLabel: _onUpdateAnnotationLabel,
   onUpdateAnnotationDate,
+  onCreateLink,
+  onDeleteLink,
   onClose,
   onPreviousRecord,
   onNextRecord,
@@ -60,6 +66,66 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
   isReviewed = false,
   readOnly = false,
 }) => {
+  // Link mode state
+  const [linkMode, setLinkMode] = useState(false);
+  const [linkFromId, setLinkFromId] = useState<number | null>(null);
+
+  const exitLinkMode = useCallback(() => {
+    setLinkMode(false);
+    setLinkFromId(null);
+  }, []);
+
+  // Returns the compatible partner label(s) for a given label
+  const getCompatibleLabels = useCallback(
+    (label: string): string[] => {
+      const result: string[] = [];
+      for (const rel of labelRelations) {
+        if (rel.from_label === label) result.push(rel.to_label);
+        if (rel.to_label === label) result.push(rel.from_label);
+      }
+      return result;
+    },
+    [labelRelations]
+  );
+
+  // Returns true if this label participates in any defined relation
+  const isRelationLabel = useCallback(
+    (label: string): boolean =>
+      labelRelations.some((r: LabelRelation) => r.from_label === label || r.to_label === label),
+    [labelRelations]
+  );
+
+  // Shared handler for span clicks and annotation list clicks in link mode
+  const handleSpanLinkClick = useCallback(
+    (termId: number) => {
+      const annotation = annotations.find((a: SourceTerm) => a.id === termId);
+      if (!annotation) return;
+
+      if (linkFromId === null) {
+        if (isRelationLabel(annotation.label)) setLinkFromId(termId);
+      } else if (termId === linkFromId) {
+        setLinkFromId(null);
+      } else {
+        const fromAnnotation = annotations.find((a: SourceTerm) => a.id === linkFromId);
+        if (!fromAnnotation) return;
+        const compatible = getCompatibleLabels(fromAnnotation.label).includes(annotation.label);
+        if (!compatible) return;
+        const existingLink = annotation.links?.find(
+          (l: SourceTermLink) =>
+            (l.from_term_id === linkFromId && l.to_term_id === termId) ||
+            (l.to_term_id === linkFromId && l.from_term_id === termId)
+        );
+        if (existingLink) {
+          onDeleteLink(existingLink.id);
+        } else {
+          onCreateLink(linkFromId, termId);
+        }
+        setLinkFromId(null);
+      }
+    },
+    [annotations, linkFromId, isRelationLabel, getCompatibleLabels, onDeleteLink, onCreateLink]
+  );
+
   // Handle label selection - either update selected annotation or select for new annotations
   const handleLabelSelection = useCallback(
     (label: string) => {
@@ -100,14 +166,44 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
         return;
       }
 
+      // Escape exits link mode
+      if (e.key === "Escape" && linkMode) {
+        e.preventDefault();
+        exitLinkMode();
+        return;
+      }
+
+      // L toggles link mode (only when linking is available)
+      if ((e.key === "l" || e.key === "L") && !readOnly && labelRelations.length > 0) {
+        e.preventDefault();
+        if (linkMode) {
+          exitLinkMode();
+        } else {
+          setLinkMode(true);
+          onSelectAnnotation(null);
+        }
+        return;
+      }
+
       const key = parseInt(e.key, 10);
-      if (!readOnly && key >= 1 && key <= 9 && key <= labels.length) {
+      if (!readOnly && !linkMode && key >= 1 && key <= 9 && key <= labels.length) {
         e.preventDefault();
         handleLabelSelection(labels[key - 1]);
       }
 
-      // Delete selected annotation with Delete or Backspace
-      if (!readOnly && (e.key === "Delete" || e.key === "Backspace") && selectedAnnotation !== null) {
+      // Delete/Backspace in link mode: remove all links of the selected "from" term
+      if (linkMode && linkFromId !== null && (e.key === "Delete" || e.key === "Backspace")) {
+        e.preventDefault();
+        const fromTerm = annotations.find((a: SourceTerm) => a.id === linkFromId);
+        if (fromTerm?.links && fromTerm.links.length > 0) {
+          fromTerm.links.forEach((l: SourceTermLink) => onDeleteLink(l.id));
+        }
+        setLinkFromId(null);
+        return;
+      }
+
+      // Delete selected annotation with Delete or Backspace (not in link mode)
+      if (!readOnly && !linkMode && (e.key === "Delete" || e.key === "Backspace") && selectedAnnotation !== null) {
         e.preventDefault();
         onDeleteAnnotation(selectedAnnotation);
         onSelectAnnotation(null);
@@ -116,18 +212,21 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
       // Arrow Left - Previous record
       if (e.key === "ArrowLeft" && onPreviousRecord && hasPreviousRecord) {
         e.preventDefault();
+        exitLinkMode();
         onPreviousRecord();
       }
 
       // Arrow Right - Next record
       if (e.key === "ArrowRight" && onNextRecord && hasNextRecord) {
         e.preventDefault();
+        exitLinkMode();
         onNextRecord();
       }
 
       // Enter - Toggle reviewed status
       if (e.key === "Enter" && onMarkReviewed) {
         e.preventDefault();
+        exitLinkMode();
         onMarkReviewed();
       }
     },
@@ -143,6 +242,11 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
       hasNextRecord,
       onMarkReviewed,
       readOnly,
+      linkMode,
+      linkFromId,
+      annotations,
+      onDeleteLink,
+      exitLinkMode,
     ]
   );
 
@@ -154,13 +258,39 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
   }, [isOpen, handleKeyDown]);
 
   return (
-    <Sidebar isOpen={isOpen} onClose={onClose} title="Annotation Panel" width="75vw">
+    <Sidebar isOpen={isOpen} onClose={onClose} title="Annotation Panel" width="75vw" disableEscapeClose={linkMode}>
       <div className={styles["annotation-sidebar"]} onClick={() => onSelectAnnotation(null)}>
         {/* Left side - Text to annotate */}
         <div>
           {/* Label selector */}
           <div className={styles["label-section"]}>
-            <h3 className={styles["section-title"]}>Labels</h3>
+            <div className={styles["label-section__header"]}>
+              <h3 className={styles["section-title"]}>Labels</h3>
+              {!readOnly && labelRelations.length > 0 && (
+                <Button
+                  variant={linkMode ? "primary" : "outline"}
+                  size="small"
+                  onClick={() => {
+                    if (linkMode) {
+                      exitLinkMode();
+                    } else {
+                      setLinkMode(true);
+                      onSelectAnnotation(null);
+                    }
+                  }}
+                  title={linkMode ? "Confirm linking (Esc)" : "Link two annotations"}
+                >
+                  {linkMode ? "Confirm" : "Link"}
+                </Button>
+              )}
+            </div>
+            {linkMode && (
+              <div className={styles["link-mode-banner"]}>
+                {linkFromId === null
+                  ? "Click a highlighted term in the text to select it"
+                  : "Click a compatible term in the text to link — or click a black term to unlink"}
+              </div>
+            )}
             <div className={styles["label-section__buttons"]}>
               {labels.map((label, index) => (
                 <button
@@ -169,7 +299,7 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
                     [styles["label-button--active"]]: selectedLabel === label,
                   })}
                   onClick={() => handleLabelSelection(label)}
-                  disabled={readOnly || selectedAnnotation !== null}
+                  disabled={readOnly || selectedAnnotation !== null || linkMode}
                 >
                   <span className={styles["label-button__shortcut"]}>{index + 1}</span>
                   {label}
@@ -211,6 +341,11 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
                 onCreateAnnotation={onCreateAnnotation}
                 onSelectAnnotation={onSelectAnnotation}
                 isAnnotating={!readOnly}
+                linkMode={linkMode}
+                linkFromId={linkFromId}
+                onSpanLinkClick={handleSpanLinkClick}
+                getCompatibleLabels={getCompatibleLabels}
+                isRelationLabel={isRelationLabel}
               />
             </div>
           </div>
@@ -224,7 +359,7 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
             <div className={styles["record-navigation__buttons"]}>
               <Button
                 variant="outline"
-                onClick={onPreviousRecord}
+                onClick={() => { exitLinkMode(); onPreviousRecord?.(); }}
                 disabled={!onPreviousRecord || !hasPreviousRecord}
                 title="Previous record"
               >
@@ -233,7 +368,7 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
               </Button>
               <Button
                 variant="outline"
-                onClick={onNextRecord}
+                onClick={() => { exitLinkMode(); onNextRecord?.(); }}
                 disabled={!onNextRecord || !hasNextRecord}
                 title="Next record"
               >
@@ -243,7 +378,7 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
             </div>
             <Button
               variant={isReviewed ? "success" : "primary"}
-              onClick={onMarkReviewed}
+              onClick={() => { exitLinkMode(); onMarkReviewed?.(); }}
               disabled={!onMarkReviewed}
               title={isReviewed ? "Marked as reviewed" : "Mark as reviewed"}
             >
@@ -276,26 +411,37 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
             ) : (
               <>
                 <p>
-                  <strong>Creating annotations:</strong> Select a label below, then highlight text in the medical record
-                  to annotate it.
+                  <strong>Creating annotations:</strong> Select a label, then highlight text in the record.
                 </p>
                 <p>
-                  <strong>Changing labels:</strong> Click an annotation to select it, then click a label or press{" "}
-                  <kbd>1</kbd>-<kbd>9</kbd> to change its label.
+                  <strong>Changing labels:</strong> Click an annotation, then click a label or press <kbd>1</kbd>–<kbd>9</kbd>.
                 </p>
                 <p>
-                  <strong>Deleting:</strong> Click an annotation to select it, then press <kbd>Delete</kbd> or{" "}
-                  <kbd>Backspace</kbd> to remove.
+                  <strong>Deleting:</strong> Click an annotation, then press <kbd>Delete</kbd> or <kbd>Backspace</kbd>.
                 </p>
+                {labelRelations.length > 0 && (
+                  <p>
+                    <strong>Linking:</strong> Click <em>Link</em> to enter link mode, then click a highlighted term in
+                    the text (grey border = linkable, black border = already linked). Click a compatible term to link, or click a
+                    black-bordered term to remove that link. With a term selected, press <kbd>Delete</kbd> to remove all its
+                    links at once. Press <kbd>Esc</kbd> to cancel.
+                  </p>
+                )}
                 <p>
                   <strong>Keyboard shortcuts:</strong>
                 </p>
                 <ul className={styles["annotation-instructions__shortcuts"]}>
                   <li>
-                    <kbd>1</kbd>-<kbd>9</kbd> Select / change label
+                    <kbd>1</kbd>–<kbd>9</kbd> Select / change label
                   </li>
                   <li>
-                    <kbd>Delete</kbd> Delete annotation
+                    <kbd>Delete</kbd> Delete annotation / remove links
+                  </li>
+                  <li>
+                    <kbd>L</kbd> Toggle link mode
+                  </li>
+                  <li>
+                    <kbd>Esc</kbd> Confirm link mode
                   </li>
                   <li>
                     <kbd>←</kbd> / <kbd>→</kbd> Prev / next record
@@ -315,120 +461,162 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
               <p className={styles["annotation-section__empty"]}>No annotations yet. Select text to create one.</p>
             ) : (
               <div className={styles["annotation-section__list"]}>
-                {annotations.map((annotation) => (
-                  <div
-                    key={annotation.id}
-                    className={classNames(styles["annotation-item"], {
-                      [styles["annotation-item--selected"]]: selectedAnnotation === annotation.id,
-                    })}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (!readOnly) onSelectAnnotation(selectedAnnotation === annotation.id ? null : annotation.id);
-                    }}
-                  >
-                    <div className={styles["annotation-item__content"]}>
-                      <span className={styles["annotation-item__value"]}>{annotation.value}</span>
-                      <span
-                        className={classNames(
-                          styles["annotation-item__label"],
-                          styles[getLabelColorClass(annotation.label, labels)]
-                        )}
-                      >
-                        {annotation.label}
-                      </span>
-                      {/* Date input for selected annotation */}
-                      {selectedAnnotation === annotation.id ? (
-                        <>
-                          <input
-                            type="text"
-                            className={styles["annotation-item__date-input"]}
-                            value={editingDate}
-                            placeholder="DD/MM/YYYY"
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => e.stopPropagation()}
-                            onFocus={(e) => e.stopPropagation()}
-                            onChange={(e) => {
-                              setEditingDate(e.target.value);
-                              // Clear previous error while the user is editing
-                              if (editingDateError) setEditingDateError(null);
-                            }}
-                            onBlur={() => {
-                              // On blur, attempt a smart parse and notify parent only if valid.
-                              const v = editingDate.trim();
-                              if (v === "") {
-                                if (onUpdateAnnotationDate) onUpdateAnnotationDate(annotation.id, "");
-                                setEditingDateError(null);
-                                return;
-                              }
-                              const parsed = tryParseWithDateFns(v);
-                              if (parsed) {
-                                const iso = format(parsed, "yyyy-MM-dd"); // YYYY-MM-DD (local date)
-                                if (onUpdateAnnotationDate) onUpdateAnnotationDate(annotation.id, iso);
-                                // normalize visible input to DD/MM/YYYY
-                                setEditingDate(format(parsed, "dd/MM/yyyy"));
-                                setEditingDateError(null);
-                              } else {
-                                // Keep user's text but show an error
-                                setEditingDateError("Unrecognized date format");
-                              }
-                            }}
-                            ref={dateInputRef}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.preventDefault();
-                                dateInputRef.current?.blur();
-                              }
-                            }}
-                          />
-                          {editingDateError ? (
-                            <span className={styles["annotation-item__date-error"]}>{editingDateError}</span>
-                          ) : null}
-                        </>
-                      ) : (
-                        <span className={styles["annotation-item__date"]}>
-                          {annotation.linked_visit_date
-                            ? new Date(annotation.linked_visit_date).toLocaleDateString("en-GB", {
-                                day: "2-digit",
-                                month: "2-digit",
-                                year: "numeric",
-                              })
-                            : "No date"}
-                        </span>
-                      )}
-                      {annotation.linked_date_term_id &&
-                        (() => {
-                          const dateTerm = annotations.find((a) => a.id === annotation.linked_date_term_id);
-                          // Only show if found
-                          if (!dateTerm) return null;
-                          return (
-                            <span className={styles["annotation-item__date-id"]}>↳ linked to {dateTerm.value}</span>
-                          );
-                        })()}
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      colorScheme="danger"
-                      className={styles["annotation-item__delete"]}
+                {annotations.map((annotation) => {
+                  return (
+                    <div
+                      key={annotation.id}
+                      className={classNames(styles["annotation-item"], {
+                        [styles["annotation-item--selected"]]: !linkMode && selectedAnnotation === annotation.id,
+                      })}
                       onClick={(e) => {
                         e.stopPropagation();
-                        onDeleteAnnotation(annotation.id);
+                        if (!readOnly && !linkMode) {
+                          onSelectAnnotation(selectedAnnotation === annotation.id ? null : annotation.id);
+                        }
                       }}
-                      title="Delete annotation"
-                      disabled={readOnly}
                     >
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path
-                          d="M2 4H14M5.333 4V2.667C5.333 2.298 5.632 2 6 2H10C10.368 2 10.667 2.298 10.667 2.667V4M12.667 4V13.333C12.667 13.702 12.368 14 12 14H4C3.632 14 3.333 13.702 3.333 13.333V4H12.667Z"
-                          stroke="currentColor"
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </Button>
-                  </div>
-                ))}
+                      <div className={styles["annotation-item__content"]}>
+                        <span className={styles["annotation-item__value"]}>{annotation.value}</span>
+                        <span
+                          className={classNames(
+                            styles["annotation-item__label"],
+                            styles[getLabelColorClass(annotation.label, labels)]
+                          )}
+                        >
+                          {annotation.label}
+                        </span>
+                        {/* Date input for selected annotation (only outside link mode) */}
+                        {!linkMode && selectedAnnotation === annotation.id ? (
+                          <>
+                            <input
+                              type="text"
+                              className={styles["annotation-item__date-input"]}
+                              value={editingDate}
+                              placeholder="DD/MM/YYYY"
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => e.stopPropagation()}
+                              onFocus={(e) => e.stopPropagation()}
+                              onChange={(e) => {
+                                setEditingDate(e.target.value);
+                                if (editingDateError) setEditingDateError(null);
+                              }}
+                              onBlur={() => {
+                                const v = editingDate.trim();
+                                if (v === "") {
+                                  if (onUpdateAnnotationDate) onUpdateAnnotationDate(annotation.id, "");
+                                  setEditingDateError(null);
+                                  return;
+                                }
+                                const parsed = tryParseWithDateFns(v);
+                                if (parsed) {
+                                  const iso = format(parsed, "yyyy-MM-dd");
+                                  if (onUpdateAnnotationDate) onUpdateAnnotationDate(annotation.id, iso);
+                                  setEditingDate(format(parsed, "dd/MM/yyyy"));
+                                  setEditingDateError(null);
+                                } else {
+                                  setEditingDateError("Unrecognized date format");
+                                }
+                              }}
+                              ref={dateInputRef}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  dateInputRef.current?.blur();
+                                }
+                              }}
+                            />
+                            {editingDateError ? (
+                              <span className={styles["annotation-item__date-error"]}>{editingDateError}</span>
+                            ) : null}
+                          </>
+                        ) : (
+                          <span className={styles["annotation-item__date"]}>
+                            {annotation.linked_visit_date
+                              ? new Date(annotation.linked_visit_date).toLocaleDateString("en-GB", {
+                                  day: "2-digit",
+                                  month: "2-digit",
+                                  year: "numeric",
+                                })
+                              : "No date"}
+                          </span>
+                        )}
+                        {annotation.linked_date_term_id &&
+                          (() => {
+                            const dateTerm = annotations.find((a) => a.id === annotation.linked_date_term_id);
+                            if (!dateTerm) return null;
+                            return (
+                              <span className={styles["annotation-item__date-id"]}>↳ linked to {dateTerm.value}</span>
+                            );
+                          })()}
+                        {/* Entity links */}
+                        {annotation.links && annotation.links.length > 0 && (
+                          <div className={styles["annotation-item__links"]}>
+                            {annotation.links.map((link) => {
+                              const isFrom = link.from_term_id === annotation.id;
+                              const otherValue = isFrom ? link.to_term_value : link.from_term_value;
+                              const otherLabel = isFrom ? link.to_term_label : link.from_term_label;
+                              return (
+                                <div key={link.id} className={styles["annotation-link-row"]}>
+                                  <span className={styles["annotation-link-row__direction"]}>
+                                    {isFrom ? "→" : "←"}
+                                  </span>
+                                  <span className={styles["annotation-link-row__value"]} title={otherValue}>
+                                    {otherValue}
+                                  </span>
+                                  <span
+                                    className={classNames(
+                                      styles["annotation-item__label"],
+                                      styles[getLabelColorClass(otherLabel, labels)]
+                                    )}
+                                  >
+                                    {otherLabel}
+                                  </span>
+                                  {!readOnly && !linkMode && (
+                                    <button
+                                      type="button"
+                                      className={styles["annotation-link-row__delete"]}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onDeleteLink(link.id);
+                                      }}
+                                      title="Delete link"
+                                    >
+                                      ×
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                      {!linkMode && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          colorScheme="danger"
+                          className={styles["annotation-item__delete"]}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteAnnotation(annotation.id);
+                          }}
+                          title="Delete annotation"
+                          disabled={readOnly}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path
+                              d="M2 4H14M5.333 4V2.667C5.333 2.298 5.632 2 6 2H10C10.368 2 10.667 2.298 10.667 2.667V4M12.667 4V13.333C12.667 13.702 12.368 14 12 14H4C3.632 14 3.333 13.702 3.333 13.333V4H12.667Z"
+                              stroke="currentColor"
+                              strokeWidth="1.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

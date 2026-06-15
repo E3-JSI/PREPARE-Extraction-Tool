@@ -48,12 +48,18 @@ export type ProcessingStatus = "PENDING" | "PROCESSING" | "DONE" | "FAILED" | "D
 // Dataset types
 // ================================================
 
+export interface LabelRelation {
+  from_label: string;
+  to_label: string;
+}
+
 export interface Dataset {
   id: number;
   name: string;
   uploaded: string;
   last_modified: string;
   labels: string[];
+  label_relations: LabelRelation[];
   date_label: string | null;
   record_count: number;
   status: ProcessingStatus;
@@ -63,6 +69,7 @@ export interface Dataset {
 export interface DatasetCreate {
   name: string;
   labels: string;
+  label_relations?: string;
   file: File;
   date_label?: string;
 }
@@ -114,6 +121,16 @@ export interface RecordsOutput {
 // Source Term types
 // ================================================
 
+export interface SourceTermLink {
+  id: number;
+  from_term_id: number;
+  to_term_id: number;
+  from_term_value: string;
+  to_term_value: string;
+  from_term_label: string;
+  to_term_label: string;
+}
+
 export interface SourceTerm {
   id: number;
   value: string;
@@ -124,6 +141,7 @@ export interface SourceTerm {
   linked_visit_date?: string | null;
   manual_linked_visit_date?: boolean | null;
   linked_date_term_id?: number | null;
+  links?: SourceTermLink[];
 }
 
 export interface SourceTermCreate {
