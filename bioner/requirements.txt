@@ -3,6 +3,7 @@ fastapi==0.136.3
 huggingface_hub==0.36.2
 peft==0.17.1
 pydantic==2.13.4
+pydantic-settings==2.10.1
 pytest==9.0.3
 python_jose==3.5.0
 pytz==2026.1.post1

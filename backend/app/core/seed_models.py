@@ -1,9 +1,7 @@
 from datetime import datetime, timezone
 
 from sqlmodel import Session, select
-
-from app.core import settings
-from app.core import settings
+from app.core.settings import settings as settings
 from app.core.database import engine
 from app.models_db import TrainingRun
 

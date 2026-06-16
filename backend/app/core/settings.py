@@ -35,8 +35,8 @@ class Settings(BaseSettings):
 
     # Service settings
     EXTRACT_HOST: str = "http://0.0.0.0:5600"
-    BIONER_URL = "http://localhost:5600"
-    BACKEND_URL = "http://prepare-backend:8000"
+    BIONER_URL: str  = "http://localhost:5600"
+    BACKEND_URL: str = "http://prepare-backend:8000"
 
     # Model settings
     EMBEDDING_MODEL_SENTENCE: Union[str, None] = None

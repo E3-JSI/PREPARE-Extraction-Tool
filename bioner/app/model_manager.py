@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from xml.parsers.expat import model
 
-from app.core import settings
+from app.core.settings import settings as settings
 from app.engines import build_engine
 from app.interfaces import ModelInfo, ModelHealthCheck, AvailableModel, AvailableModelsResponse
 
