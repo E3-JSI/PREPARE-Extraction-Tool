@@ -1,4 +1,3 @@
-import gc
 import json
 import logging
 import math
@@ -12,7 +11,7 @@ from typing import Any, Optional
 import requests
 import torch
 from gliner import GLiNER
-from gliner.data_processing.collator import DataCollator
+from gliner.data_processing.collator import SpanDataCollator
 from gliner.training import Trainer, TrainingArguments
 from torch.utils.data import Dataset as TorchDataset
 from transformers import TrainerCallback
@@ -20,8 +19,22 @@ from transformers import TrainerCallback
 from app.core.settings import settings
 from app.interfaces import Entity
 from app.library.ner_metrics import NERMetrics
+from app.training.memory_budget import (
+    check_memory_budget,
+    ensure_memory_headroom,
+    release_freed_memory,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class _TrainingStopped(Exception):
+    """Raised internally when a cooperative stop checkpoint sees the stop event.
+
+    Used to unwind long-running loops (e.g. the eval loop) promptly so the worker
+    can end the run as ``stopped`` rather than running to completion.
+    """
+
 
 # -----------------------------
 # Backend callback config
@@ -122,40 +135,135 @@ def gold_to_entities(text: str, gold: list[list]) -> list[Entity]:
     ]
 
 
-def convert_to_gliner_format(data: list[dict]) -> list[dict]:
-    """Convert ``{"text": ..., "labels": [...]}`` items into GLiNER format.
+def _token_char_starts(tokens: list[str]) -> list[int]:
+    """Char start offset of each token in ``" ".join(tokens)``.
+
+    Tokens are joined by single spaces, so every token starts one character past
+    the end of the previous one. Shared by span cleaning and window realignment
+    so both derive character offsets from the exact same join logic.
 
     Args:
-        data (list[dict]): Items with ``text`` and ``labels`` keys.
+        tokens (list[str]): The token strings.
 
     Returns:
-        list[dict]: Items with ``text`` and ``ner`` keys, where ``ner`` is a
-            list of ``[start, end, label]`` spans.
+        list[int]: The character start offset of each token.
     """
+    starts: list[int] = []
+    offset = 0
+    for tok in tokens:
+        starts.append(offset)
+        offset += len(tok) + 1
+    return starts
 
-    converted = []
 
-    for item in data:
-        text = item.get("text", "")
-        labels = item.get("labels", [])
+def _window_example(item: dict, max_tokens: int, pad: int) -> list[dict]:
+    """Split a cleaned token-form item into bounded, span-centred windows.
 
-        if not text or not labels:
+    Long records blow up GLiNER's ``seq_len x span_width x num_classes`` score
+    tensor and make the first CPU step crawl. This trims each example to windows
+    of at most ``max_tokens`` tokens centred on its span groups: co-occurring
+    spans that fit within the budget are greedily packed into ONE window (so a
+    record like "the patient has a cold and a headache" stays a single two-span
+    example), and only spans too far apart to share a window spill into additional
+    windows.
+
+    Works in token space on the corrected inclusive spans, then recomputes both
+    the token ``ner`` (offset by the window start) and the character ``ner_char``
+    (from the windowed tokens via :func:`_token_char_starts`) so realignment is
+    exact.
+
+    Args:
+        item (dict): A cleaned item with ``tokenized_text``, inclusive token
+            spans in ``ner`` and character spans in ``ner_char``.
+        max_tokens (int): Hard cap on tokens per window; no emitted window ever
+            exceeds this.
+        pad (int): Context tokens kept on each side of a span group.
+
+    Returns:
+        list[dict]: One or more windowed items with realigned spans. Returns the
+            input unchanged (single-item list) when it already fits within
+            ``max_tokens``. A span wider than ``max_tokens`` on its own is dropped
+            (logged) rather than shipped oversized.
+    """
+    tokens = item["tokenized_text"]
+    ner = item["ner"]
+
+    if len(tokens) <= max_tokens or not ner:
+        return [item]
+
+    last_idx = len(tokens) - 1
+
+    # Greedily pack spans (in start order) into groups whose padded extent fits
+    # the budget. A span only opens a new group when it cannot share the current
+    # one — never one-window-per-span while they could co-occur.
+    spans = sorted(ner, key=lambda s: (s[0], s[1]))
+    groups: list[list[list]] = []
+    current: list[list] = []
+    cur_min = cur_max = 0
+    for span in spans:
+        start, end, _ = span
+        if not current:
+            current = [span]
+            cur_min, cur_max = start, end
             continue
+        new_min = min(cur_min, start)
+        new_max = max(cur_max, end)
+        win_start = max(0, new_min - pad)
+        win_end = min(last_idx, new_max + pad)
+        if win_end - win_start + 1 <= max_tokens:
+            current.append(span)
+            cur_min, cur_max = new_min, new_max
+        else:
+            groups.append(current)
+            current = [span]
+            cur_min, cur_max = start, end
+    if current:
+        groups.append(current)
 
-        ner = []
+    windows: list[dict] = []
+    for group in groups:
+        g_min = min(s[0] for s in group)
+        g_max = max(s[1] for s in group)
+        win_start = max(0, g_min - pad)
+        win_end = min(last_idx, g_max + pad)
+        # Hard cap: only reachable when a single span's own extent exceeds the
+        # budget; clamp the window and drop spans that fall outside it below.
+        if win_end - win_start + 1 > max_tokens:
+            win_end = min(last_idx, win_start + max_tokens - 1)
 
-        # naive label matching (fast baseline)
-        for label in labels:
-            start = text.lower().find(label.lower())
+        win_tokens = tokens[win_start : win_end + 1]
+        char_starts = _token_char_starts(win_tokens)
 
-            if start != -1:
-                ner.append([start, start + len(label), label])
+        win_ner: list[list] = []
+        win_ner_char: list[list] = []
+        for start, end, label in group:
+            if start < win_start or end > win_end:
+                logger.warning(
+                    "Dropping span [%d, %d] (%s): wider than max_tokens=%d",
+                    start,
+                    end,
+                    label,
+                    max_tokens,
+                )
+                continue
+            rel_start = start - win_start
+            rel_end = end - win_start
+            win_ner.append([rel_start, rel_end, label])
+            char_start = char_starts[rel_start]
+            char_end = char_starts[rel_end] + len(win_tokens[rel_end])
+            win_ner_char.append([char_start, char_end, label])
 
-        # only keep valid samples
-        if ner:
-            converted.append({"text": text, "ner": ner})
+        if win_ner:
+            windows.append(
+                {
+                    "text": " ".join(win_tokens),
+                    "tokenized_text": win_tokens,
+                    "ner": win_ner,
+                    "ner_char": win_ner_char,
+                }
+            )
 
-    return converted
+    return windows
 
 
 class GLiNERDataset(TorchDataset):
@@ -189,25 +297,20 @@ class GLiNERDataset(TorchDataset):
         }
 
 
-def _per_element_mean_loss(summed_loss, numel):
-    """Normalize a sum-reduced GLiNER loss to a per-element mean for reporting.
+def _per_positive_mean_loss(summed_loss, num_positives):
+    """Normalize a sum-reduced GLiNER loss per positive span for reporting.
 
-    GLiNER's ``Trainer`` defaults to ``loss_reduction='sum'`` (see
-    ``gliner/training/trainer.py``), so the model returns the loss summed over
-    every score element (``batch * seq_len * span_width * num_classes``). That
-    sum is what gets backpropagated and the tuned ``5e-6`` learning rate depends
-    on it, but it produces logged values in the thousands-to-hundreds-of-thousands
-    range. The model's own ``mean`` reduction is exactly ``sum / numel``, so
-    dividing the summed loss by the score-tensor element count yields the value
-    ``loss_reduction='mean'`` would report — a sane per-step mean — without
-    touching the gradient signal.
+    GLiNER's ``Trainer`` backprops the loss summed over every score element.
+    A per-element mean is useless with focal loss: >99.9% of elements are easy
+    negatives whose contribution focal loss shrinks toward zero, flattening the
+    curve to ~1e-3. Dividing by the positive-span count instead (the standard
+    focal-loss normalizer, cf. RetinaNet) keeps the curve in a familiar range
+    without touching the gradient signal.
 
-    Accepts a tensor or a plain float and returns the same kind. Guards against
-    empty/degenerate batches (``numel == 0``) by returning the input unchanged.
+    Accepts a tensor or a plain float and returns the same kind. Batches with
+    no positive spans divide by 1.
     """
-    if not numel:
-        return summed_loss
-    return summed_loss / numel
+    return summed_loss / max(num_positives, 1)
 
 
 # -----------------------------
@@ -255,18 +358,39 @@ class GLiNERFinetuner:
     def request_stop(self) -> None:
         self._stop_event.set()
 
+    def _emit_stopped(self) -> None:
+        """Mark the run terminal-stopped and notify the UI.
+
+        Used by every cooperative-stop unwind path so a stop always both frees
+        the job slot (terminal status) and emits a ``stopped`` event.
+        """
+        self._set_status("stopped")
+        self._emit({"type": "stopped", "run_id": self.run_id})
+
     # -----------------------------
     # STEP MATH HELPERS
     # -----------------------------
     def _compute_total_steps(self, train_size: int) -> int:
-        """Total optimizer steps = ceil(train_size / batch) * epochs (>=1)."""
-        steps_per_epoch = max(1, math.ceil(train_size / max(1, self.train_batch_size)))
+        """Total optimizer steps, mirroring HF Trainer's accumulation math."""
+        micro_batch, accum_steps = self._compute_micro_batch()
+        micro_batches_per_epoch = max(1, math.ceil(train_size / micro_batch))
+        steps_per_epoch = max(1, micro_batches_per_epoch // accum_steps)
         return max(1, steps_per_epoch * self.num_epochs)
 
     def _compute_eval_steps(self, total_steps: int) -> int:
-        """Eval interval targeting ~18 eval points across the run (>=1)."""
+        """Eval interval in optimizer steps (>=1)."""
+        explicit = settings.BIONER_TRAIN_EVAL_STEPS
+        if explicit >= 1:
+            return explicit
         TARGET_POINTS = 18
         return max(1, total_steps // TARGET_POINTS)
+
+    def _compute_micro_batch(self) -> tuple[int, int]:
+        """Micro-batch size and accumulation steps for the effective batch."""
+        cap = max(1, settings.BIONER_TRAIN_MICRO_BATCH)
+        batch = max(1, self.train_batch_size)
+        micro = next(m for m in range(min(cap, batch), 0, -1) if batch % m == 0)
+        return micro, batch // micro
 
     # -----------------------------
     # STATUS (thread-safe)
@@ -346,9 +470,13 @@ class GLiNERFinetuner:
             )
 
         finally:
-            gc.collect()
+            # A stopped run must actually release its memory, or the leftovers
+            # count against the next run's budget.
+            self.training_data = []
+            self.eval_data = []
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            release_freed_memory()
 
     # -----------------------------
     # TRAINING CORE
@@ -394,17 +522,19 @@ class GLiNERFinetuner:
 
                 # Char start offset of each token in the joined `text`
                 # (tokens are joined by single spaces).
-                token_char_starts = []
-                offset = 0
-                for tok in tokens:
-                    token_char_starts.append(offset)
-                    offset += len(tok) + 1
+                token_char_starts = _token_char_starts(tokens)
 
                 # Validate NER entries (token indices should be in range).
-                # `ner` stays as TOKEN spans into `tokenized_text` — that is
-                # what GLiNER's collator consumes. Everything that slices
-                # ``text[start:end]`` (eval, serialized samples) must use the
-                # CHARACTER spans kept in `ner_char` instead.
+                # `ner` stays as INCLUSIVE TOKEN spans into `tokenized_text` —
+                # that is what GLiNER's collator consumes. GLiNER 0.2.x builds
+                # candidate spans as ``(start, start + width)`` with ``width``
+                # starting at 0, so a single-token entity at token ``i`` is the
+                # inclusive span ``(i, i)`` and the gold lookup is an exact tuple
+                # match. Keeping the end token as-is (no ``+ 1``) is what makes the
+                # target line up; a ``+ 1`` trains the model one token too wide and
+                # silently drops any entity ending on the last token. Everything
+                # that slices ``text[start:end]`` (eval, serialized samples) must
+                # use the CHARACTER spans kept in `ner_char` instead.
                 valid_ner = []
                 valid_ner_char = []
                 for ent in ner:
@@ -417,7 +547,7 @@ class GLiNERFinetuner:
                         ):
                             # Token indices are already correct, just validate bounds
                             if 0 <= start_tok <= end_tok < len(tokenized_text):
-                                valid_ner.append([start_tok, end_tok + 1, label])
+                                valid_ner.append([start_tok, end_tok, label])
                                 char_start = token_char_starts[start_tok]
                                 char_end = token_char_starts[end_tok] + len(
                                     tokens[end_tok]
@@ -425,13 +555,22 @@ class GLiNERFinetuner:
                                 valid_ner_char.append([char_start, char_end, label])
 
                 if valid_ner:
-                    cleaned_data.append(
-                        {
-                            "text": text,
-                            "tokenized_text": tokens,
-                            "ner": valid_ner,
-                            "ner_char": valid_ner_char,
-                        }
+                    cleaned_item = {
+                        "text": text,
+                        "tokenized_text": tokens,
+                        "ner": valid_ner,
+                        "ner_char": valid_ner_char,
+                    }
+                    # TODO(structural-chunking): tier-1 sentence/section split
+                    # (syntok/medspacy) before the span-window fallback —
+                    # rule-based segmenters are weak on messy bulleted clinical
+                    # text, so span-window is the robust default we ship first.
+                    cleaned_data.extend(
+                        _window_example(
+                            cleaned_item,
+                            settings.BIONER_TRAIN_MAX_TOKENS,
+                            settings.BIONER_TRAIN_CONTEXT_PAD,
+                        )
                     )
                 continue
 
@@ -502,6 +641,13 @@ class GLiNERFinetuner:
         evaluation_samples = []
 
         for item in dataset:
+            # Cooperative stop checkpoint: this loop runs predict_entities over
+            # every eval item and can take minutes on CPU. Bail within one item
+            # of a stop request so the run can wind down promptly. Shared by both
+            # baseline and final evaluation.
+            if self._stop_event.is_set():
+                raise _TrainingStopped()
+
             text = item["text"]
 
             predictions = model.predict_entities(
@@ -644,19 +790,16 @@ class GLiNERFinetuner:
         print(f"[GLINER TRAINER] DEVICE: {self.device}")
         print("=" * 80 + "\n")
 
+        # Refuse models that can't fit before loading anything.
+        check_memory_budget(self.base_model_path)
+
         model = GLiNER.from_pretrained(
             self.base_model_path,
             local_files_only=False,
         ).to(self.device)
 
         if self._stop_event.is_set():
-            self._set_status("stopped")
-            self._emit(
-                {
-                    "type": "stopped",
-                    "run_id": self.run_id,
-                }
-            )
+            self._emit_stopped()
             return
 
         cleaned_data, cleaned_eval = self._prepare_cleaned_data()
@@ -693,7 +836,11 @@ class GLiNERFinetuner:
         # extraction model (the run's starting weights). Best-effort — it runs
         # inside this background training job and never blocks anything else.
         if not self._stop_event.is_set():
-            self._run_baseline_evaluation(model, val_data, labels)
+            try:
+                self._run_baseline_evaluation(model, val_data, labels)
+            except _TrainingStopped:
+                self._emit_stopped()
+                return
 
         try:
             trainer.train()
@@ -702,18 +849,12 @@ class GLiNERFinetuner:
                 model, val_data, labels, train_data, total, train_pct, val_pct
             )
 
-        except KeyboardInterrupt:
-            self._set_status("stopped")
-            self._emit(
-                {
-                    "type": "stopped",
-                    "run_id": self.run_id,
-                }
-            )
+        except (KeyboardInterrupt, _TrainingStopped):
+            self._emit_stopped()
             return
 
         if self._stop_event.is_set():
-            self._set_status("stopped")
+            self._emit_stopped()
             return
 
         self._save_model(model)
@@ -824,7 +965,7 @@ class GLiNERFinetuner:
     ) -> tuple[
         GLiNERDataset,
         "GLiNERDataset | None",
-        DataCollator,
+        SpanDataCollator,
         TrainingArguments,
         list[str],
         int,
@@ -841,7 +982,7 @@ class GLiNERFinetuner:
         # Eval reads gold spans from the raw items (which carry `ner_char`);
         # GLiNERDataset.__getitem__ would strip that key, so pass `val_data`.
 
-        collator = DataCollator(
+        collator = SpanDataCollator(
             model.config,
             data_processor=model.data_processor,
             prepare_labels=True,
@@ -865,12 +1006,17 @@ class GLiNERFinetuner:
 
         total_steps = self._compute_total_steps(len(train_data))
         eval_steps = self._compute_eval_steps(total_steps)
+        micro_batch, accum_steps = self._compute_micro_batch()
 
         eval_kwargs: dict = {}
         if eval_ds is not None:
             eval_kwargs = dict(
                 eval_strategy="steps",
                 eval_steps=eval_steps,
+                # Full batch here (unlike training): eval is a no-grad forward
+                # pass, so it has none of the activation memory that made the
+                # training batch OOM — and a bigger batch keeps the per-step
+                # eval-loss pass fast.
                 per_device_eval_batch_size=self.train_batch_size,
             )
 
@@ -878,11 +1024,19 @@ class GLiNERFinetuner:
             output_dir=output_dir,
             num_train_epochs=self.num_epochs,
             learning_rate=self.learning_rate,
+            focal_loss_alpha=0.75,
+            focal_loss_gamma=2,
+            others_lr=1e-5,
+            weight_decay=0.01,
+            others_weight_decay=0.01,
+            lr_scheduler_type="linear",
+            warmup_ratio=0.1,
             save_strategy="no",
             fp16=False,
             use_cpu=(self.device == "cpu"),
             dataloader_num_workers=0,
-            per_device_train_batch_size=self.train_batch_size,
+            per_device_train_batch_size=micro_batch,
+            gradient_accumulation_steps=accum_steps,
             report_to="none",
             logging_strategy="steps",
             # Log every step so the live loss curve populates promptly and densely
@@ -899,13 +1053,11 @@ class GLiNERFinetuner:
 
             # If we have tokenized_text, spans are token indices; otherwise character indices
             if tokenized_text:
-                # Token indices - validate bounds
+                # Token spans are INCLUSIVE, so end indexes a real token
+                # (end < len) and a single-token entity has start == end.
                 for start, end, label in item["ner"]:
-                    assert 0 <= start <= end <= len(tokenized_text), (
+                    assert 0 <= start <= end < len(tokenized_text), (
                         f"Token index out of bounds: [{start}:{end}] for {len(tokenized_text)} tokens"
-                    )
-                    assert start < end, (
-                        f"Invalid token span: start={start} must be < end={end}"
                     )
             else:
                 # Character indices - validate span is not empty
@@ -953,30 +1105,27 @@ class GLiNERFinetuner:
                 )
 
         class _TrackingTrainer(Trainer):
-            # Number of score elements the most recent (summed) loss was taken
-            # over, captured in compute_loss so the *reported* loss can be
-            # normalized to a per-element mean without changing backprop.
-            _last_loss_numel: int = 0
+            # Positive-span count of the most recent batch, captured in
+            # compute_loss so the *reported* loss can be normalized per
+            # positive span without changing backprop.
+            _last_positive_count: int = 0
 
             def training_step(self, model, inputs, num_items_in_batch=None):
                 if finetuner._stop_event.is_set():
                     self.control.should_training_stop = True
                     raise KeyboardInterrupt("Training stopped by user")
+                ensure_memory_headroom()
                 # super() backpropagates the sum-reduced loss (gradient signal
-                # unchanged) and returns that summed scalar for HF to log. We
-                # only normalize the *returned*/logged value to a per-element
-                # mean so the streamed/persisted curve is in a sane range.
+                # unchanged); only the returned/logged value is normalized.
                 loss = super().training_step(model, inputs)
-                return _per_element_mean_loss(loss, self._last_loss_numel)
+                return _per_positive_mean_loss(loss, self._last_positive_count)
 
             def compute_loss(self, model, inputs, *args, **kwargs):
                 if finetuner._stop_event.is_set():
                     self.control.should_training_stop = True
                     raise KeyboardInterrupt("Stopped before loss computation")
                 # Mirror gliner's Trainer.compute_loss forward exactly so the
-                # returned (summed) loss — and thus backprop — is unchanged,
-                # while also capturing the score-tensor element count used to
-                # normalize the reported loss (see training_step / log).
+                # returned (summed) loss — and thus backprop — is unchanged.
                 outputs = model(
                     alpha=self.args.focal_loss_alpha,
                     gamma=self.args.focal_loss_gamma,
@@ -987,25 +1136,36 @@ class GLiNERFinetuner:
                     masking=self.args.masking,
                     **inputs,
                 )
-                logits = outputs.logits
-                self._last_loss_numel = int(logits.numel()) if logits is not None else 0
+                labels = inputs.get("labels")
+                self._last_positive_count = (
+                    int((labels > 0).sum().item()) if labels is not None else 0
+                )
                 return outputs.loss
 
             def prediction_step(
                 self, model, inputs, prediction_loss_only, ignore_keys=None
             ):
-                # Mirror gliner's Trainer.prediction_step (model defaults to a
-                # sum-reduced loss here too). Eval does no backprop, so we
-                # normalize the reported eval loss to the same per-element mean
-                # scale as the training curve.
+                # Compute the eval loss with the same (focal) loss args as
+                # training — the model's bare forward defaults to plain BCE —
+                # and normalize it to the same per-positive scale, so the two
+                # curves share one objective and scale.
                 with torch.no_grad():
                     with self.compute_loss_context_manager():
-                        outputs = model(**inputs)
+                        outputs = model(
+                            alpha=self.args.focal_loss_alpha,
+                            gamma=self.args.focal_loss_gamma,
+                            prob_margin=self.args.focal_loss_prob_margin,
+                            label_smoothing=self.args.label_smoothing,
+                            reduction=self.args.loss_reduction,
+                            negatives=self.args.negatives,
+                            masking=self.args.masking,
+                            **inputs,
+                        )
                     loss = outputs.loss
                     logits = outputs.logits
                     labels = inputs["labels"]
-                if loss is not None and logits is not None and logits.numel():
-                    loss = _per_element_mean_loss(loss, int(logits.numel()))
+                if loss is not None and labels is not None:
+                    loss = _per_positive_mean_loss(loss, int((labels > 0).sum().item()))
                 if prediction_loss_only:
                     return (loss, None, None)
                 return (loss, logits, labels)
@@ -1057,6 +1217,10 @@ class GLiNERFinetuner:
         """
         try:
             metrics, _ = self.evaluate_model(model, val_data, labels)
+        except _TrainingStopped:
+            # A stop during baseline is not a failure — let the caller end the
+            # run cleanly as ``stopped`` rather than swallowing it here.
+            raise
         except Exception as e:  # noqa: BLE001 - baseline must never break training
             logger.exception(f"[BASELINE EVAL FAILED] run_id={self.run_id} error={e}")
             return

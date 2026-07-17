@@ -1,6 +1,7 @@
 import type { EChartsOption } from "echarts";
 
 import EChart from "../EChart";
+import { buildAxisTooltipFormatter } from "./tooltip";
 
 export interface LineSeries {
   /** Series label shown in the legend and tooltip. */
@@ -13,6 +14,8 @@ export interface LineSeries {
   smooth?: boolean;
   /** Fill the area under the line. */
   area?: boolean;
+  /** Draw the line across null gaps (for series with sparse points). */
+  connectNulls?: boolean;
 }
 
 export interface LineChartProps {
@@ -55,25 +58,7 @@ const LineChart = ({
       trigger: "axis",
       // Build the body ourselves so both the header (x) and series values (y) are formatted.
       formatter:
-        valueFormatter || xAxisFormatter
-          ? (params: unknown) => {
-              const items = params as Array<{
-                marker: string;
-                seriesName: string;
-                value: number;
-                axisValue: string;
-              }>;
-              if (!items.length) return "";
-              const header = xAxisFormatter ? xAxisFormatter(items[0].axisValue) : items[0].axisValue;
-              const rows = items
-                .map((it) => {
-                  const val = valueFormatter ? valueFormatter(Number(it.value)) : String(it.value);
-                  return `${it.marker}${it.seriesName}: <b>${val}</b>`;
-                })
-                .join("<br/>");
-              return `${header}<br/>${rows}`;
-            }
-          : undefined,
+        valueFormatter || xAxisFormatter ? buildAxisTooltipFormatter(valueFormatter, xAxisFormatter) : undefined,
     },
     xAxis: {
       type: "category",
@@ -95,6 +80,7 @@ const LineChart = ({
       data: s.data,
       smooth: s.smooth ?? true,
       showSymbol: false,
+      connectNulls: s.connectNulls ?? false,
       lineStyle: s.color ? { color: s.color, width: 2 } : { width: 2 },
       itemStyle: s.color ? { color: s.color } : undefined,
       areaStyle: s.area ? { opacity: 0.08 } : undefined,

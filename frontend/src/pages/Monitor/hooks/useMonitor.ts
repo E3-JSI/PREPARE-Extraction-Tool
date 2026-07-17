@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 
-import type { useToast } from "@hooks/useToast";
+import type { ToastApi } from "@hooks/useToast";
 import type { MonitorDataset, MonitorDatasetStats, TrainingMetric } from "types";
 
 export const DEFAULT_MODEL = "urchade/gliner_multi-v2.1";
@@ -28,7 +28,9 @@ export interface MonitorContextValue {
   currentStep: number;
   totalSteps: number;
   trainingMetrics: TrainingMetric[];
-  trainingStatus: string;
+  /** Live pre-training phase ("loading" | "baseline" | "init" | "training"),
+   *  or null when no run is in flight. Drives the progress phase stepper. */
+  trainingPhase: string | null;
 
   // ── training config ──
   /** Datasets to train on (first = primary). */
@@ -60,7 +62,8 @@ export interface MonitorContextValue {
   stopTraining: () => Promise<void>;
 
   // ── feedback ──
-  toast: ReturnType<typeof useToast>;
+  /** Stable toast API; the toast state + container live in `ToastProvider`. */
+  toast: ToastApi;
 }
 
 export const MonitorContext = createContext<MonitorContextValue | null>(null);

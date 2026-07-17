@@ -19,11 +19,17 @@
   margin: 0;
   font-size: 24px;
   font-weight: 700;
-  color: #11415e;
+  color: var(--color-primary-dark);
 }
 
 .header__dataset-link {
   font-size: 14px;
+}
+
+.header__subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-text-muted);
 }
 
 /* Info Tooltip */
@@ -37,12 +43,12 @@
 
 .info-tooltip__icon {
   font-size: 16px;
-  color: #9ca3af;
+  color: var(--color-gray-400);
   transition: color 0.2s ease;
 }
 
 .info-tooltip:hover .info-tooltip__icon {
-  color: #11415e;
+  color: var(--color-primary-dark);
 }
 
 .info-tooltip__content {
@@ -52,8 +58,8 @@
   transform: translateX(-50%);
   width: 320px;
   padding: 12px 16px;
-  background: #ffffff;
-  color: #11415e;
+  background: var(--color-surface);
+  color: var(--color-primary-dark);
   border-radius: 8px;
   font-size: 13px;
   font-weight: 400;

@@ -1,7 +1,7 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faCircleQuestion } from "@fortawesome/free-solid-svg-icons";
 
-import styles from "./MonitorHeader.module.css";
+import styles from "./styles.module.css";
 
 /**
  * Standalone page header for the Monitor page. Matches the style of the

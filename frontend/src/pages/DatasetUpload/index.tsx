@@ -5,10 +5,9 @@ import FileDropzone from "@components/FileDropzone";
 import Button from "@components/Button";
 import ProgressBar from "@components/ProgressBar";
 import TagInput from "@components/TagInput";
+import WorkflowPageHeader from "@components/WorkflowPageHeader";
 import { useDatasets } from "@/hooks/useDatasets";
 import { usePageTitle } from "@/hooks/usePageTitle";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faArrowLeft } from "@fortawesome/free-solid-svg-icons";
 import type { LabelRelation } from "@/types";
 
 import styles from "./styles.module.css";
@@ -134,18 +133,13 @@ const DatasetUpload = () => {
     }
   };
 
-  const sidebar = (
-    <div className={styles["upload__sidebar"]}>
-      <Button variant="outline" onClick={() => navigate("/datasets")} title="Back to datasets">
-        <FontAwesomeIcon icon={faArrowLeft} /> Datasets
-      </Button>
-    </div>
-  );
-
   return (
-    <Layout sidebar={sidebar}>
+    <Layout>
       <div className={styles.upload}>
-        <h1 className={styles["upload__title"]}>Upload Dataset</h1>
+        <WorkflowPageHeader
+          title="Upload Dataset"
+          backButton={{ label: "Datasets", to: "/datasets", title: "Back to datasets" }}
+        />
 
         <div className={styles["upload__content"]}>
           <div className={styles["upload__section"]}>

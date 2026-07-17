@@ -30,7 +30,9 @@ const TrainingLossChart = ({ metrics, isTraining, onConfigure }: Props) => {
         valueFormatter={formatLoss}
         series={[
           { name: "Train loss", data: loss, color: CHART.loss, area: true },
-          ...(hasEvalLoss ? [{ name: "Eval loss", data: evalLoss, color: CHART.relaxedF1 }] : []),
+          // connectNulls: eval loss only exists every eval_steps steps; without
+          // it the sparse points have no adjacent neighbours and no line renders.
+          ...(hasEvalLoss ? [{ name: "Eval loss", data: evalLoss, color: CHART.relaxedF1, connectNulls: true }] : []),
         ]}
       />
     );

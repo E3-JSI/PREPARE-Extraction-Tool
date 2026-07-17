@@ -2,6 +2,7 @@ import logging
 from typing import Union
 
 from fastapi import Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
@@ -126,11 +127,10 @@ async def validation_exception_handler(
         f"Validation error on {request.method} {request.url.path}: {str(exc)}"
     )
 
-    # Extract error details
-    if isinstance(exc, RequestValidationError):
-        errors = exc.errors()
-    else:
-        errors = exc.errors()
+    # pydantic v2 puts the raw exception raised by a field validator in each
+    # error's ``ctx``, which JSONResponse cannot render. Encode the errors the
+    # same way FastAPI's own handler does so rendering can never fail.
+    errors = jsonable_encoder(exc.errors())
 
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

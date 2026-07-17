@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
-import { useToast } from "@hooks/useToast";
+import { useAuth } from "@hooks/useAuth";
+import { useToastApi } from "@hooks/useToast";
+import { ApiError } from "@api/client";
 import {
+  getActiveRun,
   getDatasets,
   getMultiDatasetStats,
   getTrainingWSUrl,
@@ -14,9 +17,35 @@ import type { MonitorDataset, MonitorDatasetStats, TrainingMetric } from "types"
 import { DEFAULT_MODEL, MonitorContext } from "../hooks/useMonitor";
 import type { MonitorContextValue, MonitorView } from "../hooks/useMonitor";
 
+/**
+ * Map a failed `startTraining` request to an actionable toast payload.
+ *
+ * A 409 from the backend carries a machine-readable code: the trainer slot is
+ * held by a genuinely-active run (`TRAINING_BUSY`) or by a previous run that is
+ * still winding down after a stop (`TRAINING_STOPPING`, worth retrying). Anything
+ * else falls back to the error's own message.
+ */
+const describeStartError = (err: unknown): { message: string; suggestion?: string } => {
+  if (err instanceof ApiError && err.status === 409) {
+    const code = (err.detail as { error?: string } | null | undefined)?.error;
+    if (code === "TRAINING_STOPPING") {
+      return {
+        message: "Previous run is still stopping",
+        suggestion: "Try again in a moment.",
+      };
+    }
+    if (code === "TRAINING_BUSY") {
+      return { message: "Another training run is already active." };
+    }
+  }
+  return { message: err instanceof Error ? err.message : String(err) };
+};
+
 /** Provides all Monitor state + actions to the page and its views. */
 const MonitorProvider = ({ children }: { children: ReactNode }) => {
-  const toast = useToast();
+  // Stable imperative API — toast state lives in ToastProvider (above this
+  // provider) so showing/dismissing a toast never rerenders Monitor consumers.
+  const toast = useToastApi();
 
   const showAlert = (
     payload: { message?: string; detail?: string; suggestion?: string },
@@ -27,7 +56,18 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
     toast.showToast(message, type);
   };
 
-  const [token] = useState<string | null>(() => localStorage.getItem("access_token"));
+  // The provider is mounted above the router so its state + training websocket
+  // survive page navigation. It reads the token reactively from the auth context
+  // (not once at mount) so a login after mount connects the WS, and a logout
+  // tears it down.
+  const { isAuthenticated } = useAuth();
+  const [token, setToken] = useState<string | null>(() =>
+    isAuthenticated ? localStorage.getItem("access_token") : null
+  );
+
+  useEffect(() => {
+    setToken(isAuthenticated ? localStorage.getItem("access_token") : null);
+  }, [isAuthenticated]);
 
   const [activeView, setActiveView] = useState<MonitorView>("models");
 
@@ -53,7 +93,9 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
 
   const [trainingMetrics, setTrainingMetrics] = useState<TrainingMetric[]>([]);
   const [isTraining, setIsTraining] = useState(false);
-  const [trainingStatus, setTrainingStatus] = useState<string>("");
+  // Live pre-training phase, derived from the WS event stream (and rehydrated
+  // from the active-run endpoint on mount). Null while no run is in flight.
+  const [trainingPhase, setTrainingPhase] = useState<string | null>(null);
 
   const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
 
@@ -68,12 +110,25 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
   const isTrainingRef = useRef(false);
   const totalEpochsRef = useRef(4);
   const totalStepsRef = useRef(0);
+  // When the last training WS event arrived — drives the stalled-run watchdog.
+  const lastEventAtRef = useRef(Date.now());
   const [activeRunId, setActiveRunId] = useState<number | null>(null);
 
   // keep a ref of isTraining so the WS reconnect logic can read it without re-subscribing
   useEffect(() => {
     isTrainingRef.current = isTraining;
   }, [isTraining]);
+
+  // Teardown + user alert for a failed run (error event or dead-run reconcile).
+  const markRunDead = (message?: string | null, suggestion?: string) => {
+    const msg = message ?? "Training stopped unexpectedly.";
+    setIsTraining(false);
+    setProgress(0);
+    setCurrentStep(0);
+    setTotalSteps(0);
+    setTrainingPhase(null);
+    showAlert({ message: msg, suggestion }, "error");
+  };
 
   // ------------------ DATASETS ------------------
 
@@ -136,13 +191,16 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
         return;
       }
 
+      lastEventAtRef.current = Date.now();
+
       switch (data.type) {
         case "training_start":
           setIsTraining(true);
           setTrainingMetrics([]);
           setProgress(0);
           setCurrentStep(0);
-          setTrainingStatus("Training started…");
+          // Model is loaded; baseline evaluation runs next (the dominant CPU stall).
+          setTrainingPhase("baseline");
 
           totalEpochsRef.current = data.num_epochs ?? 4;
           setTotalEpochs(data.num_epochs ?? 4);
@@ -152,16 +210,25 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
 
         case "training_info":
           setIsTraining(true);
-          setTrainingStatus(`Training started (${data.train_size} samples)`);
+          toast.info(`Training started (${data.train_size} samples)`);
+          // First event of the run: model is loading and data is being prepared.
+          setTrainingPhase("loading");
+          break;
+
+        case "baseline_evaluation_completed":
+          // Baseline eval done; the trainer is initializing before step 1.
+          setTrainingPhase("init");
           break;
 
         case "epoch_update": {
           const epoch = Number(data.epoch ?? 0);
 
-          setProgress(() => {
+          // The epoch counter ends below num_epochs under gradient
+          // accumulation — only ever move the bar forward.
+          setProgress((prev) => {
             const safeTotal = totalEpochsRef.current;
-            if (safeTotal <= 0) return 0;
-            return Math.min(100, (epoch / safeTotal) * 100);
+            if (safeTotal <= 0) return prev;
+            return Math.max(prev, Math.min(100, (epoch / safeTotal) * 100));
           });
 
           break;
@@ -182,6 +249,8 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
 
           if (step != null) {
             setCurrentStep(step);
+            // First real training step: pre-training phases are over.
+            if (step > 0) setTrainingPhase("training");
             const total = totalStepsRef.current;
             if (total > 0) {
               setProgress(Math.min(100, Math.round((step / total) * 100)));
@@ -194,25 +263,24 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
 
         case "completed":
           setIsTraining(false);
-          setTrainingStatus(`Completed — saved to ${data.output_path ?? "unknown"}`);
+          toast.success(`Training completed — saved to ${data.output_path ?? "unknown"}`);
+          setProgress(100);
           setCurrentStep(0);
           setTotalSteps(0);
+          setTrainingPhase(null);
           break;
 
         case "stopped":
           setIsTraining(false);
-          setTrainingStatus("Training stopped.");
+          toast.info("Training stopped.");
           setProgress(0);
           setCurrentStep(0);
           setTotalSteps(0);
+          setTrainingPhase(null);
           break;
 
         case "error":
-          setIsTraining(false);
-          setTrainingStatus(`Error: ${data.message}`);
-          setCurrentStep(0);
-          setTotalSteps(0);
-          showAlert({ message: data.message, suggestion: data.suggestion }, "error");
+          markRunDead(data.message, data.suggestion);
           break;
       }
     };
@@ -223,9 +291,11 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
       const attempt = reconnectAttemptsRef.current;
       const delay = Math.min(30000, 1000 * 2 ** attempt);
       reconnectAttemptsRef.current = attempt + 1;
-      // only surface the transient state if a training run is actually in flight
-      if (isTrainingRef.current) {
-        setTrainingStatus("Connection lost — reconnecting…");
+      // Only surface the transient state if a training run is actually in
+      // flight, and only on the first attempt — later retries would re-toast
+      // the same condition on every backoff tick.
+      if (isTrainingRef.current && attempt === 0) {
+        toast.warning("Connection lost — reconnecting…");
       }
       reconnectTimerRef.current = setTimeout(connect, delay);
     };
@@ -265,6 +335,94 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  // ------------------ REHYDRATE IN-FLIGHT RUN ------------------
+
+  // On mount / (re)login, fetch any in-flight run and restore its progress so a
+  // run that started (or advanced, or finished) while this page was unmounted —
+  // or before a full page reload — is shown immediately, without waiting for the
+  // next websocket event and without the user having to reselect the dataset.
+  // Live WS events append seamlessly afterwards (train_log carries the global
+  // step, so currentStep stays authoritative).
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+
+    getActiveRun()
+      .then((run) => {
+        if (cancelled) return;
+        if (!run) {
+          // No run in flight — clear any stale phase from a prior run.
+          setTrainingPhase(null);
+          return;
+        }
+
+        if (run.status === "failed") {
+          // Backend just reconciled the run as dead — surface the reason.
+          markRunDead(run.error_message);
+          return;
+        }
+
+        setActiveRunId(run.run_id);
+        setIsTraining(true);
+        setTrainingPhase(run.phase ?? null);
+        // Drives the stats card + progress region without a manual reselect.
+        setTrainingDatasetIds(run.dataset_ids);
+
+        if (run.total_steps != null) {
+          totalStepsRef.current = run.total_steps;
+          setTotalSteps(run.total_steps);
+        }
+        if (run.num_epochs != null) {
+          totalEpochsRef.current = run.num_epochs;
+          setTotalEpochs(run.num_epochs);
+        }
+        if (run.current_step != null) {
+          setCurrentStep(run.current_step);
+          if (run.total_steps && run.total_steps > 0) {
+            setProgress(Math.min(100, Math.round((run.current_step / run.total_steps) * 100)));
+          }
+        }
+        if (run.metrics?.length) {
+          setTrainingMetrics(run.metrics);
+        }
+      })
+      .catch((err) => {
+        // Rehydration is best-effort: a failure must not crash the provider.
+        console.error("Failed to rehydrate active training run:", err);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  // ------------------ STALLED-RUN WATCHDOG ------------------
+
+  // The trainer can die without a final event (e.g. OOM-killed worker). When
+  // the WS goes quiet mid-run, ask the backend to verify the run with bioner.
+  useEffect(() => {
+    if (!token) return;
+    const STALL_MS = 90_000;
+
+    const timer = setInterval(() => {
+      if (!isTrainingRef.current) return;
+      if (Date.now() - lastEventAtRef.current < STALL_MS) return;
+      // Back off until the next full quiet period before re-verifying.
+      lastEventAtRef.current = Date.now();
+      getActiveRun()
+        .then((run) => {
+          if (run?.status === "failed") markRunDead(run.error_message);
+        })
+        .catch(() => {
+          // Best-effort; retried next quiet period.
+        });
+    }, 30_000);
+
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   // ------------------ TRAINING ------------------
 
   const resolvedModel = useCustomModel ? customModel.trim() : baseModel;
@@ -274,7 +432,6 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
 
     setTrainingMetrics([]);
     setIsTraining(true);
-    setTrainingStatus("Submitting…");
 
     try {
       const data = await apiStartTraining({
@@ -289,11 +446,9 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
       });
 
       setActiveRunId(data.run_id);
-      setTrainingStatus("Training started successfully");
     } catch (err) {
       setIsTraining(false);
-      setTrainingStatus("Training failed to start");
-      showAlert({ message: err instanceof Error ? err.message : String(err) }, "error");
+      showAlert(describeStartError(err), "error");
     }
   };
 
@@ -303,7 +458,7 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
     await apiStopTraining(activeRunId);
 
     setIsTraining(false);
-    setTrainingStatus("Stop requested.");
+    toast.info("Stop requested.");
   };
 
   const value: MonitorContextValue = {
@@ -318,7 +473,7 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
     currentStep,
     totalSteps,
     trainingMetrics,
-    trainingStatus,
+    trainingPhase,
 
     trainingDatasetIds,
     setTrainingDatasetIds,

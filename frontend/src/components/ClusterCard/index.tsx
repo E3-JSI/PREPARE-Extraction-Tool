@@ -6,26 +6,14 @@ import { faGripVertical, faPencil, faCheck, faXmark } from "@fortawesome/free-so
 
 import Button from "@components/Button";
 import DraggableTerm from "@components/DraggableTerm";
+import { getLabelColorClass } from "@/utils/labelColors";
 import type { ClusterData } from "@/types";
 
 import styles from "./styles.module.css";
 
-function getLabelColorClass(label: string, customColor?: string): string {
-  if (customColor) {
-    return "custom-label";
-  }
-  const labelMap: Record<string, string> = {
-    Condition: "condition",
-    Medication: "medication",
-    "Lab Test": "labtest",
-    Procedure: "procedure",
-    "Body Part": "bodypart",
-  };
-  return labelMap[label] || "default";
-}
-
 interface ClusterCardProps {
   cluster: ClusterData;
+  labels: string[];
   onRename: (newTitle: string) => void;
   onDelete: () => void;
   onRemoveTerm: (termId: number) => void;
@@ -35,6 +23,7 @@ interface ClusterCardProps {
 
 const ClusterCard: React.FC<ClusterCardProps> = ({
   cluster,
+  labels,
   onRename,
   onDelete,
   onRemoveTerm,
@@ -80,6 +69,8 @@ const ClusterCard: React.FC<ClusterCardProps> = ({
         border: `1px solid ${cluster.label_color}40`,
       }
     : {};
+
+  const labelColorClass = cluster.label_color ? "custom-label" : getLabelColorClass(cluster.label, labels);
 
   return (
     <div
@@ -170,10 +161,7 @@ const ClusterCard: React.FC<ClusterCardProps> = ({
         </div>
 
         <span
-          className={classNames(
-            styles["cluster-card__label-badge"],
-            styles[getLabelColorClass(cluster.label, cluster.label_color)]
-          )}
+          className={classNames(styles["cluster-card__label-badge"], styles[labelColorClass])}
           style={labelStyle}
         >
           {cluster.label}

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 
 import type { SourceTerm, SourceTermLink } from "@/types";
 
+import { assignAnchorFan, assignLanes, type FanAttachment, type LaneRun } from "./linkArrowGeometry";
 import styles from "./styles.module.css";
 
 const ARC_COLOR = "#64748b";
@@ -65,7 +66,43 @@ const LinkArrowOverlay: React.FC<LinkArrowOverlayProps> = ({
     }
 
     const containerRect = container.getBoundingClientRect();
-    const computed: ArcCoords[] = [];
+
+    // Pass 1 — resolve each link's DOM geometry into a plain descriptor. The
+    // endpoint that touches each term span is recorded as a fan attachment
+    // (grouped per span line box), and the horizontal run as a lane run. The
+    // actual anchor X / horizontal Y come from the pure helpers below.
+    interface Endpoint {
+      termId: number;
+      // The chosen line box (first/last) for this endpoint.
+      rectLeft: number;
+      rectWidth: number;
+      rectTop: number;
+      // The container-relative Y where the vertical stub meets the span.
+      stubY: number;
+      // Base (un-fanned) center X of the *other* endpoint, for fan ordering.
+      otherCenterX: number;
+    }
+    interface Descriptor {
+      link: SourceTermLink;
+      from: Endpoint;
+      to: Endpoint;
+      edgeY: number;
+      sign: 1 | -1;
+      availableGap: number;
+    }
+
+    const descriptors: Descriptor[] = [];
+    const fanGroups = new Map<string, { rectLeft: number; rectWidth: number; attachments: FanAttachment[] }>();
+
+    const registerAttachment = (termId: number, ep: Endpoint, key: string) => {
+      const groupKey = `${termId}:${Math.round(ep.rectTop)}`;
+      let group = fanGroups.get(groupKey);
+      if (!group) {
+        group = { rectLeft: ep.rectLeft, rectWidth: ep.rectWidth, attachments: [] };
+        fanGroups.set(groupKey, group);
+      }
+      group.attachments.push({ key, otherX: ep.otherCenterX });
+    };
 
     for (const link of uniqueLinks) {
       const fromEl = container.querySelector<HTMLElement>(`[data-term-id="${link.from_term_id}"]`);
@@ -88,31 +125,125 @@ const LinkArrowOverlay: React.FC<LinkArrowOverlayProps> = ({
       const y2Top = toFirst.top - containerRect.top;
       const y2Bot = toLast.bottom - containerRect.top;
 
-      // X anchors use the center of the relevant line box, not the union bounding box
+      // X centers use the relevant line box, not the union bounding box
       const x1First = fromFirst.left + fromFirst.width / 2 - containerRect.left;
       const x1Last = fromLast.left + fromLast.width / 2 - containerRect.left;
       const x2First = toFirst.left + toFirst.width / 2 - containerRect.left;
       const x2Last = toLast.left + toLast.width / 2 - containerRect.left;
 
+      const relLeft = (r: DOMRect) => r.left - containerRect.left;
+      const relTop = (r: DOMRect) => r.top - containerRect.top;
+
       const sameLine = Math.abs(y1Top - y2Top) < SAME_LINE_THRESHOLD;
 
-      let d: string;
+      let from: Endpoint;
+      let to: Endpoint;
+      let edgeY: number;
+      let sign: 1 | -1;
+      let availableGap: number;
+
       if (sameLine) {
-        // Horizontal sits 4px above the spans — in the inter-line gap above current line
-        const arcTopY = Math.min(y1Top, y2Top) - 4;
-        d = `M ${x1First},${y1Top} L ${x1First},${arcTopY} L ${x2First},${arcTopY} L ${x2First},${y2Top}`;
+        // Horizontal sits above the spans — in the inter-line gap above the line
+        from = {
+          termId: link.from_term_id,
+          rectLeft: relLeft(fromFirst),
+          rectWidth: fromFirst.width,
+          rectTop: relTop(fromFirst),
+          stubY: y1Top,
+          otherCenterX: x2First,
+        };
+        to = {
+          termId: link.to_term_id,
+          rectLeft: relLeft(toFirst),
+          rectWidth: toFirst.width,
+          rectTop: relTop(toFirst),
+          stubY: y2Top,
+          otherCenterX: x1First,
+        };
+        edgeY = Math.min(y1Top, y2Top);
+        sign = -1;
+        // No previous-line Y on hand; the line's own height is a safe gap proxy.
+        availableGap = Math.max(0, y1Bot - y1Top);
       } else if (y1Top < y2Top) {
-        // Forward: horizontal sits 4px below from-span — in the inter-line gap
-        const horizY = y1Bot + 4;
-        d = `M ${x1Last},${y1Bot} L ${x1Last},${horizY} L ${x2First},${horizY} L ${x2First},${y2Top}`;
+        // Forward: horizontal sits below the from-span — in the inter-line gap
+        from = {
+          termId: link.from_term_id,
+          rectLeft: relLeft(fromLast),
+          rectWidth: fromLast.width,
+          rectTop: relTop(fromLast),
+          stubY: y1Bot,
+          otherCenterX: x2First,
+        };
+        to = {
+          termId: link.to_term_id,
+          rectLeft: relLeft(toFirst),
+          rectWidth: toFirst.width,
+          rectTop: relTop(toFirst),
+          stubY: y2Top,
+          otherCenterX: x1Last,
+        };
+        edgeY = y1Bot;
+        sign = 1;
+        availableGap = Math.max(0, y2Top - y1Bot);
       } else {
-        // Backward: horizontal sits 4px above from-span — in the inter-line gap
-        const horizY = y1Top - 4;
-        d = `M ${x1First},${y1Top} L ${x1First},${horizY} L ${x2Last},${horizY} L ${x2Last},${y2Bot}`;
+        // Backward: horizontal sits above the from-span — in the inter-line gap
+        from = {
+          termId: link.from_term_id,
+          rectLeft: relLeft(fromFirst),
+          rectWidth: fromFirst.width,
+          rectTop: relTop(fromFirst),
+          stubY: y1Top,
+          otherCenterX: x2Last,
+        };
+        to = {
+          termId: link.to_term_id,
+          rectLeft: relLeft(toLast),
+          rectWidth: toLast.width,
+          rectTop: relTop(toLast),
+          stubY: y2Bot,
+          otherCenterX: x1First,
+        };
+        edgeY = y1Top;
+        sign = -1;
+        availableGap = Math.max(0, y1Top - y2Bot);
       }
 
-      computed.push({ link, d });
+      registerAttachment(link.from_term_id, from, `${link.id}:from`);
+      registerAttachment(link.to_term_id, to, `${link.id}:to`);
+      descriptors.push({ link, from, to, edgeY, sign, availableGap });
     }
+
+    // Pass 2 — fan shared-term anchors across each span's usable width.
+    const anchorX = new Map<string, number>();
+    for (const group of fanGroups.values()) {
+      const fan = assignAnchorFan(group.rectLeft, group.rectWidth, group.attachments);
+      for (const [key, x] of fan) anchorX.set(key, x);
+    }
+
+    // Pass 3 — assign a per-gap lane to each horizontal run so parallel arrows
+    // stack instead of overlapping. Group by rounded edge Y + direction sign.
+    const laneRuns: LaneRun[] = descriptors.map((desc) => {
+      const fromX = anchorX.get(`${desc.link.id}:from`) ?? desc.from.rectLeft + desc.from.rectWidth / 2;
+      const toX = anchorX.get(`${desc.link.id}:to`) ?? desc.to.rectLeft + desc.to.rectWidth / 2;
+      return {
+        key: String(desc.link.id),
+        groupKey: `${Math.round(desc.edgeY)}:${desc.sign}`,
+        minX: Math.min(fromX, toX),
+        edgeY: desc.edgeY,
+        sign: desc.sign,
+        availableGap: desc.availableGap,
+      };
+    });
+    const horizYByLink = assignLanes(laneRuns);
+
+    // Pass 4 — emit the orthogonal (stepped) path per link.
+    const computed: ArcCoords[] = descriptors.map((desc) => {
+      const fromX = anchorX.get(`${desc.link.id}:from`) ?? desc.from.rectLeft + desc.from.rectWidth / 2;
+      const toX = anchorX.get(`${desc.link.id}:to`) ?? desc.to.rectLeft + desc.to.rectWidth / 2;
+      const horizY = horizYByLink.get(String(desc.link.id)) ?? desc.edgeY + desc.sign * 4;
+      const d = `M ${fromX},${desc.from.stubY} L ${fromX},${horizY} L ${toX},${horizY} L ${toX},${desc.to.stubY}`;
+      return { link: desc.link, d };
+    });
 
     setArcs(computed);
   }, [uniqueLinks, containerRef, tick]);

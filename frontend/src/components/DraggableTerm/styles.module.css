@@ -3,8 +3,8 @@
   align-items: center;
   gap: 8px;
   padding: 8px 8px 8px 8px;
-  background: #ffffff;
-  border: 1px solid #d1d5db;
+  background: var(--color-surface);
+  border: 1px solid var(--color-gray-300);
   border-radius: 4px;
   cursor: grab;
   transition: all 0.2s ease;
@@ -12,14 +12,14 @@
 }
 
 .term-item:hover {
-  background: #f9fafb;
-  border-color: #11415e;
-  border-left-color: #11415e;
+  background: var(--color-surface-alt);
+  border-color: var(--color-primary-dark);
+  border-left-color: var(--color-primary-dark);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
 }
 
 .term-item:hover .term__drag-handle {
-  color: #11415e;
+  color: var(--color-primary-dark);
 }
 
 .term-item:active {
@@ -28,15 +28,20 @@
   transform: scale(0.98);
 }
 
+.term-item:focus-visible {
+  outline: 2px solid var(--color-info);
+  outline-offset: 2px;
+}
+
 .term-item--dragging {
   opacity: 0;
 }
 
 .term-item--overlay {
-  background: #ffffff;
-  border: 1px solid #11415e;
+  background: var(--color-surface);
+  border: 1px solid var(--color-primary-dark);
   box-shadow:
-    0 0 0 1px #11415e,
+    0 0 0 1px var(--color-primary-dark),
     0 8px 20px rgba(0, 0, 0, 0.15);
   cursor: grabbing;
 }
@@ -46,7 +51,7 @@
 }
 
 .term__drag-handle {
-  color: #9ca3af;
+  color: var(--color-gray-400);
   font-size: 12px;
   padding: 2px;
   flex-shrink: 0;
@@ -54,7 +59,7 @@
 }
 
 .term__text {
-  color: #374151;
+  color: var(--color-text);
   font-size: 14px;
   flex: 1;
   min-width: 0;
@@ -70,7 +75,7 @@
 }
 
 .term__frequency {
-  color: #6b7280;
+  color: var(--color-text-muted);
   font-size: 12px;
   min-width: 60px;
   text-align: right;
@@ -80,21 +85,21 @@
 .term__frequency-bar {
   width: 80px;
   height: 6px;
-  background: #e5e7eb;
+  background: var(--color-border);
   border-radius: 2px;
   overflow: hidden;
 }
 
 .term__frequency-bar-fill {
   height: 100%;
-  background: #2e9d72;
+  background: var(--color-success);
   transition: width 0.3s ease;
 }
 
 .term__remove-btn {
   background: none;
   border: none;
-  color: #9ca3af;
+  color: var(--color-gray-400);
   cursor: pointer;
   width: 20px;
   height: 20px;
@@ -106,13 +111,20 @@
   opacity: 0;
 }
 
-.term-item:hover .term__remove-btn {
+.term-item:hover .term__remove-btn,
+.term-item:focus-within .term__remove-btn {
   opacity: 1;
 }
 
 .term__remove-btn:hover {
-  color: #dc2626;
-  background: #fef2f2;
+  color: var(--color-error);
+  background: var(--color-error-tint);
+}
+
+.term__remove-btn:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--color-info);
+  outline-offset: 2px;
 }
 
 @media (max-width: 768px) {

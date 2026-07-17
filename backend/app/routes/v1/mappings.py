@@ -4,15 +4,24 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    status,
+    File,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
-from app.core.database import get_session
+from app.core.database import engine, get_session
 from app.models_db import (
     Dataset,
     Cluster,
     Concept,
+    MappingJob,
     SourceToConceptMap,
     User,
 )
@@ -28,7 +37,8 @@ from app.schemas import (
     AutoMapRequest,
     MapClusterRequest,
     AutoMapAllRequest,
-    AutoMapAllResponse,
+    MappingJobStartResponse,
+    MappingJobStatusResponse,
     ConceptHierarchy,
 )
 
@@ -338,103 +348,308 @@ def delete_cluster_mapping(
 
 @router.post(
     "/{dataset_id}/auto-map-all",
-    response_model=AutoMapAllResponse,
+    response_model=MappingJobStartResponse,
     status_code=status.HTTP_200_OK,
-    summary="Auto-map all unmapped clusters",
-    description="Bulk auto-mapping for all clusters without mappings",
+    summary="Start bulk auto-mapping for all clusters",
+    description=(
+        "Queues a background job that auto-maps every reviewed, unmapped cluster. "
+        "Returns immediately with a job id; poll the status endpoint for progress."
+    ),
 )
 def auto_map_all_clusters(
     dataset_id: int,
     request: AutoMapAllRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ):
-    """Auto-map all unmapped clusters."""
+    """Kick off bulk auto-mapping and return a pollable job id."""
     # Verify dataset ownership
     dataset = db.get(Dataset, dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
     verify_dataset_ownership(dataset, current_user.id)
 
-    # Get all unmapped reviewed clusters
+    active_job = db.exec(
+        select(MappingJob)
+        .where(MappingJob.dataset_id == dataset_id)
+        .where((MappingJob.status == "pending") | (MappingJob.status == "running"))
+    ).first()
+    if active_job is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An auto-map job is already running for this dataset",
+        )
+
+    # Total is the number of reviewed clusters processed by the loop; the worker
+    # ticks `completed` once per cluster (mapped, failed, or already-mapped skip).
     cluster_query = select(Cluster).where(Cluster.dataset_id == dataset_id)
-    cluster_query = cluster_query.where(Cluster.reviewed == True)
+    cluster_query = cluster_query.where(Cluster.reviewed == True)  # noqa: E712
     if request.label:
         cluster_query = cluster_query.where(Cluster.label == request.label)
 
-    clusters = db.exec(cluster_query).all()
+    total = len(db.exec(cluster_query).all())
 
-    mapped_count = 0
-    failed_count = 0
+    job = MappingJob(
+        dataset_id=dataset_id,
+        total=total,
+        completed=0,
+        status="pending",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
 
-    for cluster in clusters:
-        # Skip if already mapped
-        existing_mapping = db.exec(
-            select(SourceToConceptMap).where(
-                SourceToConceptMap.cluster_id == cluster.id
-            )
-        ).first()
+    if total == 0:
+        job.status = "completed"
+        job.updated_at = datetime.now(timezone.utc)
+        db.add(job)
+        db.commit()
 
-        if existing_mapping:
-            continue
+        return MappingJobStartResponse(
+            job_id=job.id,
+            dataset_id=dataset_id,
+            total=job.total,
+            status=job.status,
+        )
 
-        try:
-            # Build search query
-            search_text = cluster.title
+    background_tasks.add_task(
+        run_auto_map_all_job,
+        job_id=job.id,
+        dataset_id=dataset_id,
+        vocabulary_ids=request.vocabulary_ids,
+        label=request.label,
+        use_cluster_terms=request.use_cluster_terms,
+        search_type=request.search_type,
+    )
 
-            if request.use_cluster_terms and cluster.source_terms:
-                term_freq = defaultdict(int)
-                for term in cluster.source_terms:
-                    term_freq[term.value] += 1
+    return MappingJobStartResponse(
+        job_id=job.id,
+        dataset_id=dataset_id,
+        total=total,
+        status=job.status,
+    )
 
-                top_terms = sorted(term_freq.items(), key=lambda x: x[1], reverse=True)[
-                    :5
-                ]
-                search_text += " " + " ".join([term for term, _ in top_terms])
 
-            # Search for best match - choose method based on search_type
-            if request.search_type == "vector":
-                es_results, _ = indexer.search_concepts_vector(
-                    query_text=search_text,
-                    vocab_ids=request.vocabulary_ids,
-                    limit=1,
-                )
-            else:
-                es_results, _ = indexer.search_concepts(
-                    query_text=search_text,
-                    vocab_ids=request.vocabulary_ids,
-                    limit=1,
-                )
+@router.get(
+    "/{dataset_id}/auto-map-all/active",
+    response_model=Optional[MappingJobStatusResponse],
+)
+def get_active_auto_map_job(
+    dataset_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Return the latest pending/running auto-map job for the dataset, or null."""
+    dataset = db.get(Dataset, dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    verify_dataset_ownership(dataset, current_user.id)
 
-            if es_results:
-                best_match = es_results[0]
-                concept = db.get(Concept, best_match["concept_id"])
+    job = db.exec(
+        select(MappingJob)
+        .where(MappingJob.dataset_id == dataset_id)
+        .where((MappingJob.status == "pending") | (MappingJob.status == "running"))
+        .order_by(MappingJob.created_at.desc())
+    ).first()
 
-                if concept:
-                    # Create mapping
-                    new_mapping = SourceToConceptMap(
-                        cluster_id=cluster.id,
-                        concept_id=concept.id,
-                        status="pending",
-                    )
-                    db.add(new_mapping)
-                    mapped_count += 1
-                else:
-                    failed_count += 1
-            else:
-                failed_count += 1
+    if job is None:
+        return None
 
-        except Exception as e:
-            print(f"Error mapping cluster {cluster.id}: {e}")
-            failed_count += 1
+    return _mapping_job_status(job)
 
+
+@router.get(
+    "/{dataset_id}/auto-map-all/{job_id}/status",
+    response_model=MappingJobStatusResponse,
+)
+def get_auto_map_job_status(
+    dataset_id: int,
+    job_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Return progress for an auto-map-all job."""
+    dataset = db.get(Dataset, dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    verify_dataset_ownership(dataset, current_user.id)
+
+    job = db.get(MappingJob, job_id)
+    if job is None or job.dataset_id != dataset_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Auto-map job not found for this dataset",
+        )
+
+    return _mapping_job_status(job)
+
+
+@router.post(
+    "/{dataset_id}/auto-map-all/{job_id}/cancel",
+    response_model=MessageOutput,
+)
+def cancel_auto_map_job(
+    dataset_id: int,
+    job_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Request cancellation of an auto-map job. Already-created mappings remain."""
+    dataset = db.get(Dataset, dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    verify_dataset_ownership(dataset, current_user.id)
+
+    job = db.get(MappingJob, job_id)
+    if job is None or job.dataset_id != dataset_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Auto-map job not found for this dataset",
+        )
+
+    if job.status in {"completed", "failed", "cancelled"}:
+        return MessageOutput(message=f"Job already {job.status}")
+
+    job.status = "cancelled"
+    job.updated_at = datetime.now(timezone.utc)
+    db.add(job)
     db.commit()
 
-    return AutoMapAllResponse(
-        mapped_count=mapped_count,
-        failed_count=failed_count,
-        total_clusters=len(clusters),
+    return MessageOutput(message="Cancellation requested")
+
+
+def _mapping_job_status(job: MappingJob) -> MappingJobStatusResponse:
+    """Build the polled status response from a MappingJob row."""
+    return MappingJobStatusResponse(
+        job_id=job.id,
+        dataset_id=job.dataset_id,
+        total=job.total,
+        completed=job.completed,
+        mapped_count=job.mapped_count,
+        failed_count=job.failed_count,
+        status=job.status,
+        error_message=job.error_message,
     )
+
+
+def run_auto_map_all_job(
+    job_id: int,
+    dataset_id: int,
+    vocabulary_ids: list[int],
+    label: Optional[str],
+    use_cluster_terms: bool,
+    search_type: str,
+):
+    """Background task that auto-maps every reviewed, unmapped cluster.
+
+    Mirrors the extraction worker: flips the job to running, ticks `completed`
+    per cluster committing as it goes, honours a `cancelled` status to break
+    early, and records the final mapped/failed tallies on the job.
+    """
+    with Session(engine) as session:
+        job = session.get(MappingJob, job_id)
+        if job is None:
+            return
+
+        if job.status == "cancelled":
+            return
+
+        job.status = "running"
+        job.updated_at = datetime.now(timezone.utc)
+        session.add(job)
+        session.commit()
+
+        cluster_query = select(Cluster).where(Cluster.dataset_id == dataset_id)
+        cluster_query = cluster_query.where(Cluster.reviewed == True)  # noqa: E712
+        if label:
+            cluster_query = cluster_query.where(Cluster.label == label)
+        clusters = session.exec(cluster_query).all()
+
+        mapped_count = 0
+        failed_count = 0
+
+        for cluster in clusters:
+            session.refresh(job)
+            if job.status == "cancelled":
+                job.mapped_count = mapped_count
+                job.failed_count = failed_count
+                job.updated_at = datetime.now(timezone.utc)
+                session.add(job)
+                session.commit()
+                return
+
+            # Skip if already mapped (preserve the original server-side guard).
+            existing_mapping = session.exec(
+                select(SourceToConceptMap).where(
+                    SourceToConceptMap.cluster_id == cluster.id
+                )
+            ).first()
+
+            if not existing_mapping:
+                try:
+                    # Build search query
+                    search_text = cluster.title
+
+                    if use_cluster_terms and cluster.source_terms:
+                        term_freq = defaultdict(int)
+                        for term in cluster.source_terms:
+                            term_freq[term.value] += 1
+
+                        top_terms = sorted(
+                            term_freq.items(), key=lambda x: x[1], reverse=True
+                        )[:5]
+                        search_text += " " + " ".join([term for term, _ in top_terms])
+
+                    # Search for best match - choose method based on search_type
+                    if search_type == "vector":
+                        es_results, _ = indexer.search_concepts_vector(
+                            query_text=search_text,
+                            vocab_ids=vocabulary_ids,
+                            limit=1,
+                        )
+                    else:
+                        es_results, _ = indexer.search_concepts(
+                            query_text=search_text,
+                            vocab_ids=vocabulary_ids,
+                            limit=1,
+                        )
+
+                    if es_results:
+                        best_match = es_results[0]
+                        concept = session.get(Concept, best_match["concept_id"])
+
+                        if concept:
+                            session.add(
+                                SourceToConceptMap(
+                                    cluster_id=cluster.id,
+                                    concept_id=concept.id,
+                                    status="pending",
+                                )
+                            )
+                            mapped_count += 1
+                        else:
+                            failed_count += 1
+                    else:
+                        failed_count += 1
+
+                except Exception as e:
+                    print(f"Error mapping cluster {cluster.id}: {e}")
+                    failed_count += 1
+
+            job.completed += 1
+            job.mapped_count = mapped_count
+            job.failed_count = failed_count
+            job.updated_at = datetime.now(timezone.utc)
+            session.add(job)
+            session.commit()
+
+        job.status = "completed"
+        job.mapped_count = mapped_count
+        job.failed_count = failed_count
+        job.updated_at = datetime.now(timezone.utc)
+        session.add(job)
+        session.commit()
 
 
 @router.get(

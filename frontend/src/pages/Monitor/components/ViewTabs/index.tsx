@@ -1,8 +1,8 @@
 import classNames from "classnames";
 
-import { useMonitor } from "../hooks/useMonitor";
-import type { MonitorView } from "../hooks/useMonitor";
-import styles from "./ViewTabs.module.css";
+import { useMonitor } from "../../hooks/useMonitor";
+import type { MonitorView } from "../../hooks/useMonitor";
+import styles from "./styles.module.css";
 
 const TABS: { id: MonitorView; label: string }[] = [
   { id: "models", label: "Models" },

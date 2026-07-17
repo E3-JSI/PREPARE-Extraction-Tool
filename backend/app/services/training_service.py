@@ -3,17 +3,22 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlmodel import Session, select
+import requests
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, func, select
 
 from app.models_db import (
     AppSettings,
+    Evaluation,
+    ExtractionJob,
+    LiveEvalJob,
     Model,
     ModelTrainRecordLink,
     TrainingMetric,
     TrainingRun,
     TrainingRunDatasetLink,
 )
-from app.services import evaluation_service
+from app.services import bioner_client, evaluation_service
 
 
 def create_run(
@@ -156,6 +161,22 @@ def set_total_steps(db: Session, run_id: int, total_steps: int) -> None:
     db.commit()
 
 
+def set_num_epochs(db: Session, run_id: int, num_epochs: int) -> None:
+    """Record the planned epoch count on the run (under train_stats).
+
+    Stored alongside ``total_steps`` so the Monitor page can rehydrate the
+    epoch-based progress denominator after a reload.
+    """
+    run = db.get(TrainingRun, run_id)
+    if run is None:
+        return
+    stats = dict(run.train_stats or {})
+    stats["num_epochs"] = num_epochs
+    run.train_stats = stats
+    db.add(run)
+    db.commit()
+
+
 def get_run_metrics(db: Session, run_id: int) -> List[TrainingMetric]:
     """Return a run's per-epoch loss points, ordered by epoch.
 
@@ -192,6 +213,8 @@ def _ensure_model(db: Session, run: TrainingRun) -> Model:
         version=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
         base_model=run.base_model,
         dataset_id=run.dataset_id,
+        source="trained",
+        engine="gliner",
     )
     db.add(model)
     db.commit()
@@ -227,6 +250,7 @@ def _ensure_baseline_model(db: Session, run: TrainingRun) -> Model:
         version="baseline",
         base_model=run.base_model,
         dataset_id=run.dataset_id,
+        source="baseline",
     )
     db.add(model)
     db.commit()
@@ -435,6 +459,93 @@ def get_active_runs_for_datasets(
     return unique
 
 
+def get_active_run(db: Session) -> Optional[TrainingRun]:
+    """Return the most recent pending/running training run, or None.
+
+    At most one run is meaningfully in flight instance-wide (a new run is
+    rejected while another is active for its datasets). Used to rehydrate live
+    Monitor progress on (re)mount without needing the dataset ids up front.
+
+    Args:
+        db (Session): Active DB session.
+
+    Returns:
+        Optional[TrainingRun]: The in-flight run, or None if none is active.
+    """
+    return db.exec(
+        select(TrainingRun)
+        .where(TrainingRun.status.in_(["pending", "running"]))
+        .order_by(TrainingRun.id.desc())
+    ).first()
+
+
+def get_current_step(db: Session, run_id: int) -> Optional[int]:
+    """Return the highest recorded metric step for a run (live progress cursor).
+
+    Args:
+        db (Session): Active DB session.
+        run_id (int): The training run id.
+
+    Returns:
+        Optional[int]: The max ``TrainingMetric.step``, or None if no steps yet.
+    """
+    return db.exec(
+        select(func.max(TrainingMetric.step)).where(TrainingMetric.run_id == run_id)
+    ).one()
+
+
+def has_baseline_evaluation(db: Session, run: TrainingRun) -> bool:
+    """Return True once the run's dataset has a stored baseline evaluation.
+
+    The baseline (untrained base model) evaluation is written when the trainer
+    emits ``baseline_evaluation_completed`` — its presence marks the transition
+    out of the baseline-evaluation phase into trainer initialization. Used to
+    derive the live pre-training phase for Monitor rehydration.
+
+    Args:
+        db (Session): Active DB session.
+        run (TrainingRun): The run whose dataset baseline to check.
+
+    Returns:
+        bool: Whether a baseline evaluation exists for the run's dataset.
+    """
+    model = get_baseline_model(db, run.dataset_id)
+    if model is None:
+        return False
+    row = db.exec(select(Evaluation.id).where(Evaluation.model_id == model.id)).first()
+    return row is not None
+
+
+def derive_training_phase(
+    db: Session, run: TrainingRun, current_step: Optional[int]
+) -> Optional[str]:
+    """Derive a run's live pre-training phase from already-persisted signals.
+
+    Mirrors the frontend's event-driven phase mapping so the Monitor stepper can
+    rehydrate mid-gap — after navigating away and back before the first training
+    step emits a metric. Returns one of ``"loading"``, ``"baseline"``, ``"init"``
+    or ``"training"`` while the run is in flight, else None.
+
+    Args:
+        db (Session): Active DB session.
+        run (TrainingRun): The run to derive the phase for.
+        current_step (Optional[int]): Highest recorded metric step, if any.
+
+    Returns:
+        Optional[str]: The derived phase, or None when no run is in flight.
+    """
+    if run.status not in ("pending", "running"):
+        return None
+    if current_step is not None and current_step > 0:
+        return "training"
+    if has_baseline_evaluation(db, run):
+        return "init"
+    stats = run.train_stats or {}
+    if stats.get("total_steps") is not None:
+        return "baseline"
+    return "loading"
+
+
 def update_run(
     db: Session,
     run_id: int,
@@ -558,3 +669,119 @@ def delete_run(db: Session, run_id: int) -> bool:
     db.delete(run)
     db.commit()
     return True
+
+
+def delete_model(db: Session, model: Model) -> None:
+    """Delete a Model row and every DB reference that would block it.
+
+    ``ExtractionJob.model_id`` has no ON DELETE clause and is non-nullable, so
+    the model's extraction/live-eval job-history rows are deleted with it. A
+    TrainingRun that produced the model is kept as history with its model link
+    cleared (matching runs whose model was deleted before this endpoint existed).
+    Evaluation and SourceTermEx rows are removed by the ORM cascade.
+    """
+    for job in db.exec(
+        select(ExtractionJob).where(ExtractionJob.model_id == model.id)
+    ).all():
+        db.delete(job)
+    for job in db.exec(
+        select(LiveEvalJob).where(LiveEvalJob.model_id == model.id)
+    ).all():
+        db.delete(job)
+    for link in db.exec(
+        select(ModelTrainRecordLink).where(ModelTrainRecordLink.model_id == model.id)
+    ).all():
+        db.delete(link)
+    run = model.training_run
+    if run is not None:
+        run.model_id = None
+        db.add(run)
+    db.flush()
+    db.delete(model)
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# On-disk model discovery / reconciliation
+# ---------------------------------------------------------------------------
+
+
+def _norm_path(path: str) -> str:
+    """Normalize a filesystem path for comparison (drop a trailing slash)."""
+    return path.rstrip("/")
+
+
+def discover_models(db: Session) -> dict:
+    """Reconcile the ``Model`` table with bioner's on-disk model folders.
+
+    FAIL-SAFE: if the bioner scan is unreachable/errors, do nothing (no upserts,
+    no deletes) and report ``ok=False`` — a transient bioner outage must never
+    mass-delete models.
+
+    On success:
+    - upsert: create a ``discovered`` Model row for each scanned folder that has
+      no existing row matched by ``path`` (trained runs already carry their path).
+    - delete-missing: delete a Model row IFF its ``path`` is set, points into the
+      scanned models dir, and its folder is absent from the scan. Rows with
+      ``path IS NULL`` (baseline/launch-default anchors, HF-only rows) are never
+      deleted. This cascade-removes the row's Evaluation rows (accepted).
+
+    Returns scan meta the caller uses to enrich the reconciled list:
+    ``{ok, current_engine, default_model, scan_by_path}`` where ``scan_by_path``
+    maps a normalized path -> its scan entry (engine, is_adapter, ...).
+    """
+    try:
+        scan = bioner_client.get_available_models()
+    except requests.RequestException:
+        return {
+            "ok": False,
+            "current_engine": None,
+            "default_model": None,
+            "scan_by_path": {},
+        }
+
+    scanned = scan.get("models", []) or []
+    scanned_by_path = {_norm_path(m["path"]): m for m in scanned}
+    scanned_paths = set(scanned_by_path)
+
+    # Upsert discovered folders that have no existing row for their path.
+    for m in scanned:
+        path = m["path"]
+        existing = db.exec(select(Model).where(Model.path == path)).first()
+        if existing is None:
+            db.add(
+                Model(
+                    name=m["dir_name"],
+                    version=m.get("version") or "local",
+                    path=path,
+                    source="discovered",
+                    engine=m.get("engine"),
+                )
+            )
+    db.commit()
+
+    # Delete-missing, scoped strictly to folders under the scanned models dir.
+    models_dir = scan.get("models_dir")
+    if models_dir:
+        prefix = _norm_path(models_dir) + "/"
+        rows = db.exec(select(Model).where(Model.path.is_not(None))).all()
+        for row in rows:
+            p = _norm_path(row.path)
+            if p.startswith(prefix) and p not in scanned_paths:
+                # A row can still be referenced by an ExtractionJob (no ON DELETE
+                # clause on that FK, unlike the other model_id references) even
+                # though its folder is gone from disk. Skip it rather than let
+                # the FK violation crash the whole reconcile for every model.
+                try:
+                    with db.begin_nested():
+                        db.delete(row)
+                except IntegrityError:
+                    pass
+        db.commit()
+
+    return {
+        "ok": True,
+        "current_engine": scan.get("current_engine"),
+        "default_model": scan.get("default_model"),
+        "scan_by_path": scanned_by_path,
+    }

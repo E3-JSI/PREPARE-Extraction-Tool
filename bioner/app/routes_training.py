@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, status
 from huggingface_hub import model_info
 from pydantic import BaseModel
 
-from app.training.job_manager import get_training_job_manager
+from app.training.job_manager import StartResult, get_training_job_manager
 
 router = APIRouter(tags=["Training"])
 
@@ -64,7 +64,7 @@ async def start_training(request: TrainingStartRequest):
 
     # 2. Start job
     manager = get_training_job_manager()
-    started = manager.start_job(
+    result = manager.start_job(
         run_id=request.run_id,
         base_model_path=request.base_model,
         training_data=request.training_data,
@@ -76,8 +76,20 @@ async def start_training(request: TrainingStartRequest):
         val_ratio=request.val_ratio,
     )
 
-    # 3. If busy -> error
-    if not started:
+    # 3. If busy -> 409 with a machine-readable reason so the frontend can show
+    #    the right message: a genuinely active run vs a previous run still
+    #    winding down after a stop (retry shortly).
+    if result is StartResult.STOPPING:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "TRAINING_STOPPING",
+                "message": "Previous training run is still stopping",
+                "suggestion": "Retry in a moment"
+            }
+        )
+
+    if result is not StartResult.STARTED:
         raise HTTPException(
             status_code=409,
             detail={

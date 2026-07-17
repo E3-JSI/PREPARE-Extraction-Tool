@@ -271,6 +271,12 @@ class Model(SQLModel, table=True):
     version: str
     base_model: Optional[str] = Field(default=None)
     path: Optional[str] = Field(default=None)
+    # Provenance of this row: "trained" (produced by a run), "discovered"
+    # (found on disk by a bioner models-dir scan), or "baseline" (comparison
+    # anchor / launch default; typically has no path).
+    source: Optional[str] = Field(default=None)
+    # Engine backing the model: "gliner" | "huggingface" (null for anchors).
+    engine: Optional[str] = Field(default=None)
     dataset_id: Optional[int] = Field(
         default=None, foreign_key="dataset.id", ondelete="SET NULL"
     )
@@ -500,6 +506,113 @@ class ExtractionJob(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     currently_used: bool = Field(default=True)  # samo en True
+
+
+class MappingJob(SQLModel, table=True):
+    """
+    Tracks progress for dataset-wide auto-map-all runs.
+
+    Mirrors ExtractionJob: one row per bulk auto-mapping run, polled by the
+    frontend for a progress bar. `completed` ticks once per cluster processed
+    (mapped, failed, or skipped-because-already-mapped); `mapped_count` /
+    `failed_count` carry the final tallies surfaced in the success toast.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    dataset_id: int = Field(
+        foreign_key="dataset.id", ondelete="CASCADE", nullable=False, index=True
+    )
+    total: int = Field(default=0)
+    completed: int = Field(default=0)
+    mapped_count: int = Field(default=0)
+    failed_count: int = Field(default=0)
+    status: str = Field(
+        default="pending", index=True
+    )  # pending|running|completed|failed|cancelled
+    error_message: Optional[str] = Field(default=None)
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ClusterJob(SQLModel, table=True):
+    """
+    Tracks progress for dataset-wide "cluster all labels" runs.
+
+    Keyed on the dataset (no model). Progress is measured in labels: ``total`` is
+    the number of labels in the dataset and ``completed`` increments once per
+    label processed. ``clustered_labels``/``skipped_labels`` record the per-label
+    outcome so the UI can report which labels were (re)clustered and which were
+    skipped because they already had a reviewed cluster.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    dataset_id: int = Field(
+        foreign_key="dataset.id", ondelete="CASCADE", nullable=False, index=True
+    )
+    total: int = Field(default=0)
+    completed: int = Field(default=0)
+    status: str = Field(
+        default="pending", index=True
+    )  # pending|running|completed|failed|cancelled
+    error_message: Optional[str] = Field(default=None)
+
+    clustered_labels: List[str] = Field(
+        default_factory=list, sa_column=Column(JSON, nullable=False)
+    )
+    skipped_labels: List[str] = Field(
+        default_factory=list, sa_column=Column(JSON, nullable=False)
+    )
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    currently_used: bool = Field(default=True)  # only one True
+
+
+class LiveEvalJob(SQLModel, table=True):
+    """
+    Tracks progress for a user-triggered live evaluation run.
+
+    Keyed on a (model, dataset) pair: runs the model over the dataset's reviewed,
+    held-out records (records NOT used to train the model that carry gold
+    SourceTerm annotations) and scores the model's predictions against those gold
+    terms. Mirrors ExtractionJob's lifecycle (pending|running|completed|failed|
+    cancelled) with a per-record progress bar (``completed``/``total``).
+
+    The computed precision/recall/F1 metrics are stored on ``metrics`` — isolated
+    here so live eval never touches the shared ``Evaluation`` table read by the
+    base-vs-trained per-label chart. Predictions are written to ``SourceTermEx``
+    (never ``SourceTerm``).
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    dataset_id: int = Field(
+        foreign_key="dataset.id", ondelete="CASCADE", nullable=False, index=True
+    )
+    model_id: int = Field(
+        foreign_key="model.id", ondelete="CASCADE", nullable=False, index=True
+    )
+    total: int = Field(default=0)
+    completed: int = Field(default=0)
+    status: str = Field(
+        default="pending", index=True
+    )  # pending|running|completed|failed|cancelled
+    error_message: Optional[str] = Field(default=None)
+
+    # Computed metrics: per-label exact/relaxed/overlap P/R/F1 + macro aggregate,
+    # held-out count, and a message for the empty-set case. Null until computed.
+    metrics: Optional[dict] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    currently_used: bool = Field(default=True)  # only one True
 
 
 class Vocabulary(SQLModel, table=True):

@@ -191,12 +191,30 @@ export function useExtractionPolling({
     pollJobRef.current = pollExtractionJob;
   });
 
-  // Resume polling once on mount if a job was active when the user navigated away.
+  // Resume polling once on mount if an extraction is still in flight. localStorage is only a
+  // hint — it is missing when the job was started in another tab or cleared by a transient poll
+  // error — so fall back to the backend, which is authoritative about what is still running.
   useEffect(() => {
-    const savedJobId = localStorage.getItem(extractionStorageKey);
-    if (savedJobId && pollJobRef.current) {
-      pollJobRef.current(savedJobId).catch(() => {});
-    }
+    const resume = async () => {
+      const savedJobId = localStorage.getItem(extractionStorageKey);
+      if (savedJobId) {
+        try {
+          await pollJobRef.current?.(savedJobId);
+          return;
+        } catch {
+          localStorage.removeItem(extractionStorageKey);
+        }
+      }
+      try {
+        const active = await getActiveExtractionJobAPI(datasetId);
+        if (active?.job_id) {
+          await pollJobRef.current?.(String(active.job_id));
+        }
+      } catch {
+        // Non-critical — no active job to resume
+      }
+    };
+    resume();
     // Mount-only: using an empty dep array is intentional — we only want this to fire on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

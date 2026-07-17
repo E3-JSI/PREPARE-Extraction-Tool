@@ -5,10 +5,12 @@ import Layout from "@components/Layout";
 import Button from "@components/Button";
 import StatCard from "@components/StatCard";
 import ConfirmDialog from "@components/ConfirmDialog";
+import ProgressBar from "@components/ProgressBar";
 import { ToastContainer } from "@components/Toast/ToastContainer";
 import WorkflowPageHeader from "@components/WorkflowPageHeader";
 import { usePageTitle } from "@hooks/usePageTitle";
 import { useToast } from "@hooks/useToast";
+import { useAutoMapJob, type AutoMapJobProgress } from "@hooks/useAutoMapJob";
 import * as api from "@/api";
 
 import SourceTermsTable from "./SourceTermsTable";
@@ -433,6 +435,28 @@ export default function DatasetConceptMapping() {
     });
   };
 
+  // Auto-map-all runs as a polled backend job. Completion (explicit run or a
+  // resumed job) toasts the final counts and refreshes the mappings.
+  const handleAutoMapComplete = useCallback(
+    (p: AutoMapJobProgress) => {
+      if (p.status === "cancelled") {
+        toast.info(`Auto-mapping cancelled. Mapped: ${p.mapped_count}, Failed: ${p.failed_count}`);
+      } else {
+        toast.success(`Auto-mapping complete! Mapped: ${p.mapped_count}, Failed: ${p.failed_count}`);
+      }
+      fetchMappings();
+    },
+    [toast, fetchMappings]
+  );
+
+  const {
+    isRunning: isAutoMapping,
+    isCancelling: isCancellingAutoMap,
+    progress: autoMapProgress,
+    startAutoMap,
+    cancelAutoMap,
+  } = useAutoMapJob(datasetId ? parseInt(datasetId) : 0, handleAutoMapComplete);
+
   // Handle auto-map all
   const handleAutoMapAll = () => {
     // Use all vocabularies if filter is disabled, otherwise use selected
@@ -449,23 +473,25 @@ export default function DatasetConceptMapping() {
       onConfirm: async () => {
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
         try {
-          setIsLoading(true);
-          const response = await api.autoMapAllClusters(parseInt(datasetId), {
+          await startAutoMap({
             vocabulary_ids: vocabIdsToUse,
             label: selectedLabel || undefined,
             use_cluster_terms: true,
             search_type: "vector",
           });
-
-          toast.success(`Auto-mapping complete! Mapped: ${response.mapped_count}, Failed: ${response.failed_count}`);
-          await fetchMappings();
         } catch (err) {
           toast.error(err instanceof Error ? err.message : "Auto-mapping failed");
-        } finally {
-          setIsLoading(false);
         }
       },
     });
+  };
+
+  const handleCancelAutoMap = async () => {
+    try {
+      await cancelAutoMap();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to cancel auto-mapping");
+    }
   };
 
   // Handle export
@@ -541,20 +567,46 @@ export default function DatasetConceptMapping() {
           </div>
 
           <div className={styles["page__toolbar-buttons"]}>
-            <Button variant="success" onClick={handleAutoMapAll} disabled={isLoading || vocabularies.length === 0}>
-              Auto-Map All Terms
-            </Button>
+            {isAutoMapping ? (
+              <div className={styles["page__auto-map"]}>
+                <span className={styles["page__auto-map-label"]}>Auto-mapping in progress</span>
+                {autoMapProgress && autoMapProgress.total > 0 && (
+                  <span className={styles["page__auto-map-count"]}>
+                    {autoMapProgress.completed} / {autoMapProgress.total} clusters
+                  </span>
+                )}
+                <div className={styles["page__auto-map-progress"]}>
+                  <ProgressBar
+                    progress={
+                      autoMapProgress && autoMapProgress.total > 0
+                        ? (autoMapProgress.completed / autoMapProgress.total) * 100
+                        : 0
+                    }
+                    showPercentage
+                  />
+                </div>
+                <Button variant="outline" size="small" onClick={handleCancelAutoMap} disabled={isCancellingAutoMap}>
+                  {isCancellingAutoMap ? "Cancelling…" : "Cancel"}
+                </Button>
+              </div>
+            ) : (
+              <>
+                <Button variant="success" onClick={handleAutoMapAll} disabled={isLoading || vocabularies.length === 0}>
+                  Auto-Map All Terms
+                </Button>
 
-            <Button variant="primary" onClick={handleExport}>
-              Download Mappings
-            </Button>
+                <Button variant="primary" onClick={handleExport}>
+                  Download Mappings
+                </Button>
+              </>
+            )}
           </div>
         </div>
 
         {error && (
           <div className={styles["page__error"]}>
             {error}
-            <Button variant="ghost" size="icon" onClick={() => setError(null)}>
+            <Button variant="ghost" size="icon" onClick={() => setError(null)} aria-label="Dismiss error">
               ×
             </Button>
           </div>

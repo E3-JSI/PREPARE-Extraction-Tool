@@ -13,9 +13,10 @@ interface HighlightedTextProps {
   terms: SourceTerm[];
   labels: string[];
   focusedTermId?: number | null;
+  onTermClick?: (termId: number) => void;
 }
 
-const HighlightedText: React.FC<HighlightedTextProps> = ({ text, terms, labels, focusedTermId }) => {
+const HighlightedText: React.FC<HighlightedTextProps> = ({ text, terms, labels, focusedTermId, onTermClick }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [hoveredTermId, setHoveredTermId] = useState<number | null>(null);
 
@@ -92,6 +93,7 @@ const HighlightedText: React.FC<HighlightedTextProps> = ({ text, terms, labels, 
             }
             onMouseEnter={() => setHoveredTermId(segment.term.id)}
             onMouseLeave={() => setHoveredTermId(null)}
+            onClick={() => onTermClick?.(segment.term.id)}
           >
             {segment.content}
             {segment.term.links && segment.term.links.length > 0 && (

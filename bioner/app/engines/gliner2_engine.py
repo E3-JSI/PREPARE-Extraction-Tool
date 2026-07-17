@@ -25,7 +25,7 @@ class Gliner2Engine(BaseEngine):
         # otherwise treat it as a HF-hub id and allow network resolution.
         local_only = os.path.isdir(self.model)
         self.model = GLiNER2.from_pretrained(self.model,
-                                            load_tokenizer=False,
+                                            load_tokenizer=True,
                                             local_files_only=local_only)
         self.model.to(self.device)
 

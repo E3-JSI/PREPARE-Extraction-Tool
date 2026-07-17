@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MemoryRouter } from "react-router-dom";
-import ActiveModelChip from "./ActiveModelChip";
+import ActiveModelChip from ".";
 
 const meta: Meta<typeof ActiveModelChip> = {
   title: "Pages/DatasetTermExtraction/ActiveModelChip",

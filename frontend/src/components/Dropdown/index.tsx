@@ -8,6 +8,8 @@ export interface DropdownItem {
   onClick: () => void;
   icon?: ReactNode;
   variant?: "default" | "danger";
+  disabled?: boolean;
+  title?: string;
 }
 
 export interface DropdownProps {
@@ -108,6 +110,8 @@ const Dropdown = ({ trigger, items, align = "right" }: DropdownProps) => {
           })}
           onClick={() => handleItemClick(item)}
           type="button"
+          disabled={item.disabled}
+          title={item.title}
         >
           {item.icon && <span className={styles["dropdown__item-icon"]}>{item.icon}</span>}
           {item.label}

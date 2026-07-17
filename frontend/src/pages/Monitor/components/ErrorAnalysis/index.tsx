@@ -6,8 +6,8 @@ import { faChevronDown, faChevronRight } from "@fortawesome/free-solid-svg-icons
 import { ChartState } from "@components/charts";
 import type { ErrorExample, RunErrorAnalysis } from "types";
 
-import { normalizeLabel } from "../chartData";
-import styles from "./ErrorAnalysis.module.css";
+import { normalizeLabel } from "../../chartData";
+import styles from "./styles.module.css";
 
 const CHART_HEIGHT = 200;
 

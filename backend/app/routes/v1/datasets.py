@@ -32,6 +32,7 @@ from app.models_db import (
     SourceTermLink,
     User,
     Cluster,
+    ClusterJob,
     SourceToConceptMap,
     ProcessingStatus,
 )
@@ -68,6 +69,8 @@ from app.schemas import (
     ClusterResponse,
     ClusterMerge,
     ClusterReviewLabelRequest,
+    ClusterJobStartResponse,
+    ClusterJobStatusResponse,
     create_pagination_metadata,
 )
 
@@ -234,6 +237,7 @@ async def create_dataset(
     )
     return dataset_response
 
+
 def ingest_dataset_background(
     file_path: str,
     name: str,
@@ -313,6 +317,7 @@ def ingest_dataset_background(
     finally:
         db.close()
 
+
 async def save_upload_to_disk(file: UploadFile, suffix: str) -> str:
     max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
     path = f"/tmp/{uuid4()}{suffix}"
@@ -331,6 +336,7 @@ async def save_upload_to_disk(file: UploadFile, suffix: str) -> str:
             out.write(chunk)
 
     return path
+
 
 @router.get(
     "/{dataset_id}",
@@ -564,7 +570,7 @@ def delete_dataset(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found"
         )
-    
+
     verify_dataset_ownership(dataset, current_user.id)
     # remember the status so the background task can restore it if the
     # hard-delete fails, keeping the dataset recoverable.
@@ -1523,21 +1529,18 @@ def _merge_labels_by_centroid_similarity(
     return merged
 
 
-@router.post("/{dataset_id}/clusters/create", response_model=MessageOutput)
-def create_clusters_for_dataset(
-    dataset_id: int,
-    label: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session),
-):
+def _cluster_dataset_label(db: Session, dataset_id: int, label: str) -> tuple[int, int]:
+    """Rebuild clusters for a single ``(dataset_id, label)``.
 
-    dataset = db.get(Dataset, dataset_id)
-    if not dataset:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found"
-        )
-    verify_dataset_ownership(dataset, current_user.id)
+    Shared by the per-label endpoint and the "cluster all labels" batch worker.
+    Selects the reviewed-record source terms for the label, clusters them
+    (dates → exact key, measures → normalized key, else embeddings + HDBSCAN),
+    then destructively replaces the label's existing clusters with the result.
 
+    Returns ``(clusters_created, terms_count)``. ``(0, 0)`` when the label has no
+    source terms to cluster (caller treats this as a no-op, not an error). Does
+    NOT perform ownership/existence checks — callers are responsible for those.
+    """
     source_terms = db.exec(
         select(SourceTerm)
         .join(Record)
@@ -1547,11 +1550,11 @@ def create_clusters_for_dataset(
     ).all()
 
     if not source_terms:
-        return MessageOutput(message="No source terms for this label in dataset")
+        return (0, 0)
 
     raw_texts = [st.value for st in source_terms]
     if not raw_texts:
-        return MessageOutput(message="No terms to cluster")
+        return (0, 0)
 
     # 1) Decide value type for this label by majority vote
     types = []
@@ -1575,7 +1578,6 @@ def create_clusters_for_dataset(
 
     type_counts = Counter(types)
     major_type = type_counts.most_common(1)[0][0]
-
 
     # 2) If it's dates: cluster by exact canonical key
     if major_type == "date":
@@ -1658,8 +1660,6 @@ def create_clusters_for_dataset(
     db.commit()
 
     # Create new clusters
-    cluster_map = {}  # cluster_id (from HDBSCAN) -> Cluster DB object
-
     cluster_terms = defaultdict(list)
     noise_terms = []
 
@@ -1713,7 +1713,300 @@ def create_clusters_for_dataset(
 
     db.commit()
 
+    return (len(created_by_title_norm), len(source_terms))
+
+
+@router.post("/{dataset_id}/clusters/create", response_model=MessageOutput)
+def create_clusters_for_dataset(
+    dataset_id: int,
+    label: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    dataset = db.get(Dataset, dataset_id)
+    if not dataset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found"
+        )
+    verify_dataset_ownership(dataset, current_user.id)
+
+    _clusters_created, terms_count = _cluster_dataset_label(db, dataset_id, label)
+    if terms_count == 0:
+        return MessageOutput(message="No source terms for this label in dataset")
+
     return MessageOutput(message="Clusters rebuilt and saved to database.")
+
+
+def _cluster_job_status(job: ClusterJob) -> ClusterJobStatusResponse:
+    return ClusterJobStatusResponse(
+        job_id=job.id,
+        dataset_id=job.dataset_id,
+        total=job.total,
+        completed=job.completed,
+        status=job.status,
+        clustered_labels=job.clustered_labels,
+        skipped_labels=job.skipped_labels,
+        error_message=job.error_message,
+    )
+
+
+def _label_has_reviewed_cluster(db: Session, dataset_id: int, label: str) -> bool:
+    """A label is "reviewed" (→ skip re-clustering) if any of its clusters is
+    marked reviewed. Re-clustering wipes the label's clusters and cascades to
+    delete their concept mappings, so reviewed labels must be preserved."""
+    return (
+        db.exec(
+            select(Cluster.id)
+            .where(Cluster.dataset_id == dataset_id)
+            .where(Cluster.label == label)
+            .where(Cluster.reviewed == True)  # noqa: E712
+        ).first()
+        is not None
+    )
+
+
+@router.post(
+    "/{dataset_id}/clusters/cluster-all", response_model=ClusterJobStartResponse
+)
+def cluster_all_labels(
+    dataset_id: int,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Kick off clustering for every label in the dataset.
+
+    Returns immediately with a job id; progress (in labels) can be polled via the
+    status endpoint. Labels with a reviewed cluster are skipped, not re-clustered.
+    """
+    dataset = db.get(Dataset, dataset_id)
+    if not dataset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found"
+        )
+    verify_dataset_ownership(dataset, current_user.id)
+
+    active_job = db.exec(
+        select(ClusterJob)
+        .where(ClusterJob.dataset_id == dataset_id)
+        .where((ClusterJob.status == "pending") | (ClusterJob.status == "running"))
+    ).first()
+    if active_job is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A clustering job is already running for this dataset",
+        )
+
+    # Only one job is the "currently used" one for the dataset.
+    currently_used_job = db.exec(
+        select(ClusterJob)
+        .where(ClusterJob.currently_used == True)  # noqa: E712
+        .where(ClusterJob.dataset_id == dataset_id)
+        .order_by(ClusterJob.created_at.desc())
+    ).first()
+    if currently_used_job is not None:
+        currently_used_job.currently_used = False
+        db.add(currently_used_job)
+        db.commit()
+
+    labels = dataset.labels or []
+    job = ClusterJob(
+        dataset_id=dataset_id,
+        total=len(labels),
+        completed=0,
+        status="pending",
+        currently_used=True,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    if not labels:
+        job.status = "completed"
+        job.updated_at = datetime.now(timezone.utc)
+        db.add(job)
+        db.commit()
+        return ClusterJobStartResponse(
+            job_id=job.id,
+            dataset_id=dataset_id,
+            total=job.total,
+            status=job.status,
+        )
+
+    background_tasks.add_task(
+        run_cluster_all_job,
+        job_id=job.id,
+        dataset_id=dataset_id,
+    )
+
+    return ClusterJobStartResponse(
+        job_id=job.id,
+        dataset_id=dataset_id,
+        total=job.total,
+        status=job.status,
+    )
+
+
+@router.get(
+    "/{dataset_id}/clusters/cluster-all/active",
+    response_model=Optional[ClusterJobStatusResponse],
+)
+def get_active_cluster_job(
+    dataset_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Return the latest pending/running cluster-all job for the dataset, or null."""
+    dataset = db.get(Dataset, dataset_id)
+    if not dataset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found"
+        )
+    verify_dataset_ownership(dataset, current_user.id)
+
+    job = db.exec(
+        select(ClusterJob)
+        .where(ClusterJob.dataset_id == dataset_id)
+        .where((ClusterJob.status == "pending") | (ClusterJob.status == "running"))
+        .order_by(ClusterJob.created_at.desc())
+    ).first()
+
+    if job is None:
+        return None
+
+    return _cluster_job_status(job)
+
+
+@router.get(
+    "/{dataset_id}/clusters/cluster-all/{job_id}/status",
+    response_model=ClusterJobStatusResponse,
+)
+def get_cluster_job_status(
+    dataset_id: int,
+    job_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Return progress for a dataset cluster-all job."""
+    dataset = db.get(Dataset, dataset_id)
+    if not dataset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found"
+        )
+    verify_dataset_ownership(dataset, current_user.id)
+
+    job = db.get(ClusterJob, job_id)
+    if job is None or job.dataset_id != dataset_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Clustering job not found for this dataset",
+        )
+
+    return _cluster_job_status(job)
+
+
+@router.post(
+    "/{dataset_id}/clusters/cluster-all/{job_id}/cancel",
+    response_model=MessageOutput,
+)
+def cancel_cluster_job(
+    dataset_id: int,
+    job_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Request cancellation of a cluster-all job. Already-clustered labels remain."""
+    dataset = db.get(Dataset, dataset_id)
+    if not dataset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found"
+        )
+    verify_dataset_ownership(dataset, current_user.id)
+
+    job = db.get(ClusterJob, job_id)
+    if job is None or job.dataset_id != dataset_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Clustering job not found for this dataset",
+        )
+
+    if job.status in {"completed", "failed", "cancelled"}:
+        return MessageOutput(message=f"Job already {job.status}")
+
+    job.status = "cancelled"
+    job.updated_at = datetime.now(timezone.utc)
+    db.add(job)
+    db.commit()
+
+    return MessageOutput(message="Cancellation requested")
+
+
+def run_cluster_all_job(job_id: int, dataset_id: int):
+    """Background task that clusters every label in the dataset.
+
+    Skips any label that already has a reviewed cluster (re-clustering is
+    destructive) and records the clustered/skipped labels on the job so the UI
+    can report them. Progress is measured in labels.
+    """
+    with Session(engine) as session:
+        job = session.get(ClusterJob, job_id)
+        if job is None:
+            return
+
+        dataset = session.get(Dataset, dataset_id)
+        if dataset is None:
+            job.status = "failed"
+            job.error_message = "Dataset not found"
+            job.updated_at = datetime.now(timezone.utc)
+            session.add(job)
+            session.commit()
+            return
+
+        if job.status == "cancelled":
+            return
+
+        job.status = "running"
+        job.updated_at = datetime.now(timezone.utc)
+        session.add(job)
+        session.commit()
+
+        labels = dataset.labels or []
+        clustered: List[str] = []
+        skipped: List[str] = []
+
+        for label in labels:
+            session.refresh(job)
+            if job.status == "cancelled":
+                job.updated_at = datetime.now(timezone.utc)
+                session.add(job)
+                session.commit()
+                return
+
+            try:
+                if _label_has_reviewed_cluster(session, dataset_id, label):
+                    skipped.append(label)
+                else:
+                    _cluster_dataset_label(session, dataset_id, label)
+                    clustered.append(label)
+            except Exception as exc:  # noqa: BLE001 — surface any failure on the job
+                job.status = "failed"
+                job.error_message = f"Failed to cluster label '{label}': {exc}"
+                job.updated_at = datetime.now(timezone.utc)
+                session.add(job)
+                session.commit()
+                return
+
+            job.completed += 1
+            job.clustered_labels = list(clustered)
+            job.skipped_labels = list(skipped)
+            job.updated_at = datetime.now(timezone.utc)
+            session.add(job)
+            session.commit()
+
+        job.status = "completed"
+        job.updated_at = datetime.now(timezone.utc)
+        session.add(job)
+        session.commit()
 
 
 DATE_SEPARATORS_RE = re.compile(r"[.\-/]")
@@ -1722,6 +2015,7 @@ MEASURE_RE = re.compile(
     r"^\s*\d+(?:\s*/\s*\d+)?(?:[.,]\d+)?\s*(mg|ml|g|mcg|µg|kg|iu|%)\s*$",
     re.IGNORECASE,
 )
+
 
 @router.post("/{dataset_id}/clusters", response_model=ClusterResponse)
 def create_cluster_endpoint(

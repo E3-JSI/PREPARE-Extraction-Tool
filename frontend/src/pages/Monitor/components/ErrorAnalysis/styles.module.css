@@ -56,12 +56,12 @@
 }
 
 .fp {
-  color: var(--color-error, #dc2626);
+  color: var(--color-error, var(--color-error));
   font-weight: 600;
 }
 
 .fn {
-  color: var(--color-warning, #d97706);
+  color: var(--color-warning, var(--color-warning-hover));
   font-weight: 600;
 }
 
@@ -93,12 +93,12 @@
 
 .badgeFn {
   background: rgba(217, 119, 6, 0.12);
-  color: var(--color-warning, #d97706);
+  color: var(--color-warning, var(--color-warning-hover));
 }
 
 .badgeFp {
   background: rgba(220, 38, 38, 0.12);
-  color: var(--color-error, #dc2626);
+  color: var(--color-error, var(--color-error));
 }
 
 .exampleText {

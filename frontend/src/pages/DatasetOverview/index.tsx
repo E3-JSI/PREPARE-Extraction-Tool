@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import classNames from "classnames";
 import Layout from "@/components/Layout";
 import { usePageTitle } from "@/hooks/usePageTitle";
@@ -9,12 +9,15 @@ import * as api from "@/api";
 import Button from "@/components/Button";
 import StatCard from "@/components/StatCard";
 import WorkflowCard from "@/components/WorkflowCard";
+import WorkflowPageHeader from "@/components/WorkflowPageHeader";
 import ProgressBar from "@/components/ProgressBar";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { ToastContainer } from "@/components/Toast/ToastContainer";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faObjectGroup, faMapLocationDot, faFilePen, faArrowLeft } from "@fortawesome/free-solid-svg-icons";
+import { faObjectGroup, faMapLocationDot, faFilePen } from "@fortawesome/free-solid-svg-icons";
 import { useDatasetExtractionJob } from "@/hooks/useDatasetExtractionJob";
+import { useAutoMapJob, type AutoMapJobProgress } from "@/hooks/useAutoMapJob";
+import { useClusterAllJob } from "@/hooks/useClusterAllJob";
+import { formatClusterAllSummary } from "@/utils/clusterSummary";
 
 import styles from "./styles.module.css";
 
@@ -45,7 +48,6 @@ const DatasetOverview = () => {
   const [overview, setOverview] = useState<DatasetOverviewOutput | null>(null);
   const [vocabularies, setVocabularies] = useState<Vocabulary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isMappingAll, setIsMappingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const toast = useToast();
@@ -70,6 +72,28 @@ const DatasetOverview = () => {
   }, []);
 
   const extraction = useDatasetExtractionJob(parsedDatasetId);
+  const clusterAll = useClusterAllJob(parsedDatasetId);
+
+  // Auto-map-all completion (explicit run or resumed job) toasts the counts and
+  // refreshes the overview stats.
+  const handleAutoMapComplete = useCallback(
+    async (p: AutoMapJobProgress) => {
+      if (p.status === "cancelled") {
+        toast.warning(`Auto-mapping cancelled. Mapped: ${p.mapped_count}, Failed: ${p.failed_count}`);
+      } else {
+        toast.success(`Auto-mapping complete! Mapped: ${p.mapped_count}, Failed: ${p.failed_count}`);
+      }
+      try {
+        const data = await api.getDatasetOverview(parsedDatasetId);
+        if (mountedRef.current) setOverview(data);
+      } catch {
+        // Non-critical: the toast already reported the result.
+      }
+    },
+    [toast, parsedDatasetId]
+  );
+
+  const autoMap = useAutoMapJob(parsedDatasetId, handleAutoMapComplete);
 
   usePageTitle(overview?.dataset.name || "Dataset Overview");
 
@@ -124,23 +148,24 @@ const DatasetOverview = () => {
       onConfirm: async () => {
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
         try {
-          setIsMappingAll(true);
-          const vocabIds = vocabularies.map((v) => v.id);
-          const response = await api.autoMapAllClusters(parsedDatasetId, {
-            vocabulary_ids: vocabIds,
+          await autoMap.startAutoMap({
+            vocabulary_ids: vocabularies.map((v) => v.id),
             use_cluster_terms: true,
             search_type: "vector",
           });
-          toast.success(`Auto-mapping complete! Mapped: ${response.mapped_count}, Failed: ${response.failed_count}`);
-          const data = await api.getDatasetOverview(parsedDatasetId);
-          if (mountedRef.current) setOverview(data);
         } catch (err) {
           toast.error(err instanceof Error ? err.message : "Failed to start mapping");
-        } finally {
-          if (mountedRef.current) setIsMappingAll(false);
         }
       },
     });
+  };
+
+  const handleCancelMapping = async () => {
+    try {
+      await autoMap.cancelAutoMap();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to cancel auto-mapping");
+    }
   };
 
   const handleExtractAll = () => {
@@ -175,20 +200,22 @@ const DatasetOverview = () => {
   };
 
   const handleAutoClustering = () => {
-    if (!overview || overview.dataset.labels.length === 0) return;
+    if (!overview || overview.dataset.labels.length === 0 || clusterAll.isRunning) return;
 
     const labels = overview.dataset.labels;
 
     setConfirmDialog({
       isOpen: true,
       title: "Auto-Cluster Terms",
-      message: `This will automatically cluster all extracted terms across all ${labels.length} label${labels.length !== 1 ? "s" : ""}. Continue?`,
+      message: `This will automatically cluster all extracted terms across all ${labels.length} label${labels.length !== 1 ? "s" : ""}. Labels with reviewed clusters are skipped. Continue?`,
       variant: "warning",
       onConfirm: async () => {
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
         try {
-          await Promise.all(labels.map((label) => api.rebuildClusters(parsedDatasetId, label)));
-          toast.success("Auto-clustering completed successfully");
+          const result = await clusterAll.startClusterAll();
+          if (result) {
+            toast.success(formatClusterAllSummary(result.clustered_labels, result.skipped_labels));
+          }
           const data = await api.getDatasetOverview(parsedDatasetId);
           if (mountedRef.current) setOverview(data);
         } catch (err) {
@@ -196,6 +223,15 @@ const DatasetOverview = () => {
         }
       },
     });
+  };
+
+  const handleCancelClusterAll = async () => {
+    try {
+      await clusterAll.cancelClusterAll();
+      toast.warning("Clustering was cancelled");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to cancel clustering");
+    }
   };
 
   if (!parsedDatasetId) {
@@ -232,17 +268,11 @@ const DatasetOverview = () => {
     <Layout>
       <div className={styles.page}>
         {/* Header Section */}
-        <div className={styles.header}>
-          <div className={styles["header__title-section"]}>
-            <Button variant="outline" size="icon" onClick={() => navigate("/datasets")} aria-label="Back to Datasets">
-              <FontAwesomeIcon icon={faArrowLeft} />
-            </Button>
-            <div>
-              <h1 className={styles.header__title}>{overview.dataset.name}</h1>
-              <p className={styles.header__subtitle}>Dataset Overview and Statistics</p>
-            </div>
-          </div>
-        </div>
+        <WorkflowPageHeader
+          title={overview.dataset.name}
+          subtitle="Dataset Overview and Statistics"
+          backButton={{ label: "Back to Datasets", to: "/datasets", title: "Back to Datasets" }}
+        />
 
         {/* Labels Section */}
         {overview.dataset.labels.length > 0 && (
@@ -307,6 +337,59 @@ const DatasetOverview = () => {
             </div>
           )}
 
+          {autoMap.isRunning && (
+            <div className={styles["extraction-banner"]}>
+              <span className={styles["extraction-banner__label"]}>
+                Auto-mapping in progress
+                {autoMap.progress && autoMap.progress.total > 0
+                  ? `: ${autoMap.progress.completed} / ${autoMap.progress.total} clusters`
+                  : "…"}
+              </span>
+              <div className={styles["extraction-banner__bar"]}>
+                <ProgressBar
+                  progress={
+                    autoMap.progress && autoMap.progress.total > 0
+                      ? (autoMap.progress.completed / autoMap.progress.total) * 100
+                      : 0
+                  }
+                  showPercentage
+                />
+              </div>
+              <Button variant="outline" size="small" onClick={handleCancelMapping} disabled={autoMap.isCancelling}>
+                {autoMap.isCancelling ? "Cancelling…" : "Cancel"}
+              </Button>
+            </div>
+          )}
+
+          {clusterAll.isRunning && (
+            <div className={styles["extraction-banner"]}>
+              <span className={styles["extraction-banner__label"]}>
+                Clustering in progress
+                {clusterAll.progress && clusterAll.progress.total > 0
+                  ? `: ${clusterAll.progress.completed} / ${clusterAll.progress.total} labels`
+                  : "…"}
+              </span>
+              <div className={styles["extraction-banner__bar"]}>
+                <ProgressBar
+                  progress={
+                    clusterAll.progress && clusterAll.progress.total > 0
+                      ? (clusterAll.progress.completed / clusterAll.progress.total) * 100
+                      : 0
+                  }
+                  showPercentage
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="small"
+                onClick={handleCancelClusterAll}
+                disabled={clusterAll.isCancelling}
+              >
+                {clusterAll.isCancelling ? "Cancelling…" : "Cancel"}
+              </Button>
+            </div>
+          )}
+
           <div className={styles.workflow__grid}>
             {/* Term Extraction Card */}
             <WorkflowCard
@@ -350,6 +433,11 @@ const DatasetOverview = () => {
                 { label: "Clustered Terms", value: overview.clustering_stats.clustered_terms },
                 { label: "Unclustered Terms", value: overview.clustering_stats.unclustered_terms },
               ]}
+              progress={
+                clusterAll.isRunning && clusterAll.progress && clusterAll.progress.total > 0
+                  ? { current: clusterAll.progress.completed, total: clusterAll.progress.total }
+                  : undefined
+              }
               actions={[
                 {
                   label: "View Clusters",
@@ -357,9 +445,10 @@ const DatasetOverview = () => {
                   variant: "primary",
                 },
                 {
-                  label: "Auto-Cluster",
+                  label: clusterAll.isRunning ? "Auto-Cluster (running…)" : "Auto-Cluster",
                   onClick: handleAutoClustering,
                   variant: "secondary",
+                  disabled: clusterAll.isRunning,
                 },
               ]}
             />
@@ -385,10 +474,10 @@ const DatasetOverview = () => {
                   variant: "primary",
                 },
                 {
-                  label: isMappingAll ? "Mapping..." : "Start Mapping",
+                  label: autoMap.isRunning ? "Mapping..." : "Start Mapping",
                   onClick: handleStartMapping,
                   variant: "secondary",
-                  disabled: isMappingAll,
+                  disabled: autoMap.isRunning,
                 },
               ]}
             />

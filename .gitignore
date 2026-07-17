@@ -2,6 +2,11 @@
 .env
 .env.prod
 .claude
+# Vendored project rules are the repo's own source of truth — keep them tracked
+# even though .claude is otherwise local-only.
+!**/.claude/
+**/.claude/*
+!**/.claude/project-rules/
 # HuggingFace cache (persistent, shared by bioner + backend)
 .cache/
 
@@ -10,3 +15,4 @@ bioner/models/
 
 # devflow worktrees
 .devflow
+.claude/worktrees/

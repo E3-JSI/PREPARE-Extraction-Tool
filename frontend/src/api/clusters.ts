@@ -1,4 +1,12 @@
-import type { ClustersOutput, ClusterData, ClusterCreateRequest, ClusterMergeRequest, MessageOutput } from "types";
+import type {
+  ClustersOutput,
+  ClusterData,
+  ClusterCreateRequest,
+  ClusterMergeRequest,
+  ClusterJobStartResponse,
+  ClusterJobStatusResponse,
+  MessageOutput,
+} from "types";
 
 import { apiRequest, getToken, API_BASE_URL } from "./client";
 
@@ -11,6 +19,29 @@ export async function rebuildClusters(datasetId: number, label: string): Promise
   return apiRequest<MessageOutput>(`/datasets/${datasetId}/clusters/create?label=${encodeURIComponent(label)}`, {
     method: "POST",
   });
+}
+
+export async function startClusterAll(datasetId: number): Promise<ClusterJobStartResponse> {
+  return apiRequest<ClusterJobStartResponse>(`/datasets/${datasetId}/clusters/cluster-all`, {
+    method: "POST",
+  });
+}
+
+export async function getClusterAllStatus(datasetId: number, jobId: string): Promise<ClusterJobStatusResponse> {
+  return apiRequest<ClusterJobStatusResponse>(`/datasets/${datasetId}/clusters/cluster-all/${jobId}/status`);
+}
+
+export async function getActiveClusterJob(datasetId: number): Promise<ClusterJobStatusResponse | null> {
+  const result = await apiRequest<ClusterJobStatusResponse | null>(
+    `/datasets/${datasetId}/clusters/cluster-all/active`
+  );
+  // apiRequest returns {} for an empty 200 body, so normalize the "no active job"
+  // case (null, undefined, or an empty/jobless object) to null.
+  return result?.job_id ? result : null;
+}
+
+export async function cancelClusterJob(datasetId: number, jobId: string): Promise<MessageOutput> {
+  return apiRequest<MessageOutput>(`/datasets/${datasetId}/clusters/cluster-all/${jobId}/cancel`, { method: "POST" });
 }
 
 export async function createCluster(datasetId: number, data: ClusterCreateRequest): Promise<ClusterData> {

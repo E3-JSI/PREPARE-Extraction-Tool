@@ -1,5 +1,6 @@
+import os
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import (
@@ -26,12 +27,14 @@ from app.models_db import (
     Model,
     Record,
     SourceTerm,
-    SourceTermEx,
     TrainingRun,
 )
 from app.routes.v1.auth import get_current_user
 from app.schemas import (
     ActiveModelResponse,
+    ActiveTrainingRunResponse,
+    DefaultModelInfo,
+    DiscoveredModelSummary,
     ExtractionJobStartResponse,
     ExtractionJobStatusResponse,
     FullStatsRequest,
@@ -42,6 +45,7 @@ from app.schemas import (
     ModelDetailResponse,
     ModelSummary,
     ModelsOutput,
+    RescanModelsResponse,
     RunErrorAnalysisResponse,
     RunEvaluationResponse,
     SetActiveModelRequest,
@@ -124,82 +128,13 @@ def extract_entities_from_record(
             message=f"Record {record_id} is reviewed; extraction skipped"
         )
 
-    # Resolve the active model id (DB-only for a global selection; queries bioner
-    # for the default). Note: this route does NOT create an ExtractionJob, so it
-    # is outside the extraction-active lock (which only inspects ExtractionJob
-    # rows). That is an accepted limitation — single-record extraction is
-    # synchronous and short-lived; the lock covers batch jobs only.
-    model_id = resolve_active_model(db)
-
-    already_extracted_terms = db.exec(
-        select(SourceTermEx)
-        .where(SourceTermEx.record_id == record_id)
-        .where(SourceTermEx.model_id == model_id)
-    ).all()
-
-    if already_extracted_terms:
-        current_auto_terms = db.exec(
-            select(SourceTerm)
-            .where(SourceTerm.record_id == record_id)
-            .where(SourceTerm.automatically_extracted == True)  # noqa: E712
-        ).all()
-
-        st_keys = {
-            (t.value, t.label, t.start_position, t.end_position)
-            for t in current_auto_terms
-        }
-
-        stex_keys = {
-            (t.value, t.label, t.start_position, t.end_position)
-            for t in already_extracted_terms
-        }
-
-        if st_keys != stex_keys:
-            for term in current_auto_terms:
-                db.delete(term)
-            db.flush()
-
-            existing_source_term_keys = {
-                (t.value, t.label, t.start_position, t.end_position)
-                for t in db.exec(
-                    select(SourceTerm).where(SourceTerm.record_id == record_id)
-                ).all()
-            }
-
-            new_terms = []
-            for ex in already_extracted_terms:
-                key = (ex.value, ex.label, ex.start_position, ex.end_position)
-
-                if key in existing_source_term_keys:
-                    continue
-
-                existing_source_term_keys.add(key)
-                new_terms.append(
-                    SourceTerm(
-                        record_id=record_id,
-                        value=ex.value,
-                        label=ex.label,
-                        start_position=ex.start_position,
-                        end_position=ex.end_position,
-                        score=ex.score,
-                        automatically_extracted=True,
-                    )
-                )
-
-            if new_terms:
-                db.add_all(new_terms)
-                db.flush()
-                link_dates_for_record(db, record, dataset)
-
-            db.commit()
-
-            return MessageOutput(
-                message=f"Record {record_id} was already extracted with this model; SourceTerms were restored from SourceTermEx."
-            )
-
-        return MessageOutput(
-            message=f"Record {record_id} was already extracted with this model; extraction skipped."
-        )
+    # This route does NOT create an ExtractionJob, so it is outside the
+    # extraction-active lock (which only inspects ExtractionJob rows). That is an
+    # accepted limitation — single-record extraction is synchronous and
+    # short-lived; the lock covers batch jobs only.
+    #
+    # An explicit single-record (re-)extract always re-runs the model and writes
+    # SourceTerm fresh — no shortcut restoring cached terms.
 
     # Delete only automatically extracted SourceTerms for this record
     auto_terms = db.exec(
@@ -236,7 +171,6 @@ def extract_entities_from_record(
 
     seen_in_response = set()
     new_terms: List[SourceTerm] = []
-    ex_terms: List[SourceTermEx] = []
 
     for entity in entities:
         key = (entity["text"], entity["label"], entity["start"], entity["end"])
@@ -244,17 +178,6 @@ def extract_entities_from_record(
         if key in seen_in_response:
             continue
         seen_in_response.add(key)
-        ex_terms.append(
-            SourceTermEx(
-                record_id=record_id,
-                value=entity["text"],
-                label=entity["label"],
-                start_position=entity["start"],
-                end_position=entity["end"],
-                score=entity.get("score"),
-                model_id=model_id,
-            )
-        )
 
         if key in existing_keys:
             continue
@@ -276,10 +199,6 @@ def extract_entities_from_record(
         db.flush()
         link_dates_for_record(db, record, dataset)
         auto_link_entities_for_record(db, record, dataset)
-
-    if ex_terms:
-        db.add_all(ex_terms)
-        db.flush()
 
     db.commit()
 
@@ -339,32 +258,9 @@ def extract_entities_from_records(
     # Activate the globally selected model (or default) and resolve its Model id.
     model_id = resolve_active_model(db)
 
-    # check if a job for this dataset and model already exists and is currently "used"
-    existing_job = db.exec(
-        select(ExtractionJob)
-        .where(
-            ExtractionJob.dataset_id == dataset_id,
-            ExtractionJob.model_id == model_id,
-            ExtractionJob.currently_used == True,  # noqa: E712
-        )
-        .order_by(ExtractionJob.created_at.desc())
-    ).first()
-
-    if existing_job is None:
-        # First extraction for this model on this dataset:
-        # delete automatically extracted SourceTerms for unreviewed records only
-        unreviewed_record_ids = [r.id for r in records_to_process]
-
-        if unreviewed_record_ids:
-            source_terms_to_delete = db.exec(
-                select(SourceTerm)
-                .where(SourceTerm.record_id.in_(unreviewed_record_ids))
-                .where(SourceTerm.automatically_extracted == True)  # noqa: E712
-            ).all()
-            for st in source_terms_to_delete:
-                db.delete(st)
-
-            db.commit()
+    # Stale auto-extracted terms are cleared per record inside the background job
+    # (run_dataset_extraction_job), right before re-running NER — so a repeat run
+    # produces a fresh full extraction, not just for the first run of a model.
 
     # set current job to False, to set new job to True
     currently_used_job = db.exec(
@@ -409,7 +305,6 @@ def extract_entities_from_records(
         job_id=job.id,
         dataset_id=dataset_id,
         labels=labels.labels,
-        model_id=model_id,
     )
 
     return ExtractionJobStartResponse(
@@ -546,9 +441,7 @@ def cancel_extraction_job(
     return MessageOutput(message="Cancellation requested")
 
 
-def run_dataset_extraction_job(
-    job_id: int, dataset_id: int, labels: List[str], model_id: int
-):
+def run_dataset_extraction_job(job_id: int, dataset_id: int, labels: List[str]):
     """Background task that extracts entities for each unreviewed record."""
 
     with Session(engine) as session:
@@ -570,20 +463,25 @@ def run_dataset_extraction_job(
             select(Record).where(Record.dataset_id == dataset_id)
         ).all()
 
-        # Skip reviewed records and records already containing extracted terms with current model
+        # Reprocess every record except reviewed ones and records the user changed
+        # manually. A manually created or edited term has
+        # automatically_extracted == False, and such records must keep all their
+        # terms untouched. Skipping is decided purely from SourceTerm state:
+        # a prior version gated on SourceTermEx history, which made a re-run skip
+        # every record ever processed, so "delete all entities" + re-extract (or
+        # any repeat run) re-extracted nothing.
         unreviewed_records = [r for r in records if not r.reviewed]
         processed_records = []
         records_to_process: List[Record] = []
 
         for record in unreviewed_records:
-            # if the model already processed this Record, skip it
-            has_extraction_for_model = session.exec(
-                select(SourceTermEx.id)
-                .where(SourceTermEx.record_id == record.id)
-                .where(SourceTermEx.model_id == model_id)
+            has_manual_term = session.exec(
+                select(SourceTerm.id)
+                .where(SourceTerm.record_id == record.id)
+                .where(SourceTerm.automatically_extracted == False)  # noqa: E712
             ).first()
 
-            if has_extraction_for_model:
+            if has_manual_term:
                 processed_records.append(record)
             else:
                 records_to_process.append(record)
@@ -601,6 +499,19 @@ def run_dataset_extraction_job(
                 session.add(job)
                 session.commit()
                 return
+
+            # Clear stale auto-extracted terms before re-running NER so a repeat run
+            # yields a fresh full extraction. Manual terms are safe: records with any
+            # manual term were excluded from records_to_process above.
+            auto_terms = session.exec(
+                select(SourceTerm)
+                .where(SourceTerm.record_id == record.id)
+                .where(SourceTerm.automatically_extracted == True)  # noqa: E712
+            ).all()
+            for term in auto_terms:
+                session.delete(term)
+            if auto_terms:
+                session.flush()
 
             request_data = {"medical_text": record.text, "labels": labels}
             try:
@@ -627,24 +538,12 @@ def run_dataset_extraction_job(
             seen_in_response = set()
 
             new_terms: List[SourceTerm] = []
-            ex_terms: List[SourceTermEx] = []
             for entity in entities:
                 key = (entity["text"], entity["label"], entity["start"], entity["end"])
 
                 if key in seen_in_response:
                     continue
                 seen_in_response.add(key)
-                ex_terms.append(
-                    SourceTermEx(
-                        record_id=record.id,
-                        value=entity["text"],
-                        label=entity["label"],
-                        start_position=entity["start"],
-                        end_position=entity["end"],
-                        score=entity.get("score"),
-                        model_id=model_id,
-                    )
-                )
 
                 if key in existing_keys:
                     continue
@@ -666,9 +565,6 @@ def run_dataset_extraction_job(
                 session.flush()
                 link_dates_for_record(session, record, dataset)
                 auto_link_entities_for_record(session, record, dataset)
-            if ex_terms:
-                session.add_all(ex_terms)
-                session.flush()
 
             job.completed += 1
             job.updated_at = datetime.now(timezone.utc)
@@ -716,6 +612,8 @@ def _model_summary(db: Session, model: Model) -> ModelSummary:
         dataset_id=model.dataset_id,
         created_at=model.created_at,
         score=score,
+        source=model.source,
+        engine=model.engine,
     )
 
 
@@ -782,6 +680,127 @@ def list_models(
     return ModelsOutput(models=summaries)
 
 
+def _default_model_info(default_model, current_engine) -> Optional[DefaultModelInfo]:
+    """Build the launch-default descriptor from bioner's raw --model string.
+
+    Local paths are shown as their folder name; HuggingFace ids are shown whole.
+    """
+    if not default_model:
+        return None
+    name = (
+        os.path.basename(default_model.rstrip("/"))
+        if default_model.startswith("/")
+        else default_model
+    )
+    return DefaultModelInfo(name=name, engine=current_engine)
+
+
+@router.post("/models/rescan", response_model=RescanModelsResponse)
+def rescan_models(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Scan bioner's models dir, reconcile the DB, and return the enriched list.
+
+    This is the ONLY write path for model discovery. On a bioner scan failure it
+    is a safe no-op (see ``training_service.discover_models``) and returns the
+    current DB list with ``current_engine=None`` (nothing activatable).
+    """
+    meta = training_service.discover_models(db)
+    current_engine = meta["current_engine"]
+    scan_by_path = meta["scan_by_path"]
+
+    active_model_id = training_service.get_app_settings(db).active_model_id
+    models = db.exec(
+        select(Model)
+        .where(Model.path.is_not(None))
+        .where(Model.name != training_service.BASELINE_MODEL_NAME)
+        .order_by(Model.created_at.desc())
+    ).all()
+
+    summaries = []
+    for m in models:
+        base = _model_summary(db, m)
+        scanned = scan_by_path.get(m.path.rstrip("/")) if m.path else None
+        is_adapter = bool(scanned["is_adapter"]) if scanned else False
+        engine = scanned["engine"] if scanned else m.engine
+        activatable = (
+            current_engine is not None and engine == current_engine and not is_adapter
+        )
+        summaries.append(
+            DiscoveredModelSummary(
+                **base.model_dump(),
+                is_adapter=is_adapter,
+                activatable=activatable,
+            )
+        )
+        summaries[-1].engine = engine
+        summaries[-1].run_id = m.training_run.id if m.training_run else None
+        summaries[-1].is_active = m.id == active_model_id
+
+    return RescanModelsResponse(
+        models=summaries,
+        current_engine=current_engine,
+        default_model=_default_model_info(meta["default_model"], current_engine),
+    )
+
+
+@router.delete("/models/{model_id}", response_model=MessageOutput)
+def delete_model(
+    model_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Delete a model: its on-disk folder (via bioner) and its DB row.
+
+    Works for both trained and rescan-"discovered" models. Refused while the
+    model is globally active or any extraction/live-eval job is running. The
+    model's job-history rows go with it; a producing TrainingRun is kept as
+    history. bioner's 404 (folder already gone) is tolerated so a partially
+    failed delete can be retried.
+    """
+    model = db.get(Model, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    if model.source == "baseline" or model.name == training_service.BASELINE_MODEL_NAME:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Baseline comparison rows cannot be deleted",
+        )
+    if training_service.get_app_settings(db).active_model_id == model.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Model is the active extraction model — switch models first",
+        )
+    if extraction_lock.any_ner_job_active(db):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An extraction or live-eval job is running — try again later",
+        )
+
+    # Local model folders live under bioner's models dir (absolute paths); HF-id
+    # rows have nothing on disk. Folder first: if it fails nothing has changed,
+    # and if the later DB delete fails a rescan re-adds the row for a retry.
+    if model.path and model.path.startswith("/"):
+        dir_name = os.path.basename(model.path.rstrip("/"))
+        try:
+            bioner_client.delete_model_dir(dir_name)
+        except requests.HTTPError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=bioner_client.http_error_detail(exc)
+                or "Extraction service refused to delete the model folder",
+            )
+        except requests.RequestException:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Extraction service unavailable",
+            )
+
+    training_service.delete_model(db, model)
+    return MessageOutput(message="deleted")
+
+
 @router.get("/models/{model_id}/detail", response_model=ModelDetailResponse)
 def model_detail(
     model_id: int,
@@ -826,14 +845,22 @@ def model_detail(
 
 
 def _activate_on_bioner(model_path: Optional[str]) -> None:
-    """Hot-swap bioner to the given model path (None = revert to launch default)."""
+    """Hot-swap bioner to the given model path (None = revert to launch default).
+
+    Route-handler wrapper around ``bioner_client.activate_model``: bioner's own
+    rejection (400, e.g. the artifact no longer exists on disk) is forwarded
+    with its message; anything else surfaces as a 503.
+    """
     try:
-        resp = requests.post(
-            f"{settings.EXTRACT_HOST}/model/activate",
-            json={"model": model_path},
-            timeout=300,
+        bioner_client.activate_model(model_path)
+    except requests.HTTPError as exc:
+        detail = bioner_client.http_error_detail(exc)
+        if exc.response is not None and exc.response.status_code == 400 and detail:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Extraction service unavailable",
         )
-        resp.raise_for_status()
     except requests.RequestException:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -860,10 +887,11 @@ def set_active_model(
 ):
     """Set/clear the GLOBAL active extraction model and hot-swap bioner.
 
-    Blocked (409) while any extraction job is active instance-wide so an in-flight
-    job's pinned model can't be undermined.
+    Blocked (409) while any extraction OR live-eval job is active instance-wide so
+    an in-flight job's pinned model can't be undermined (live eval hot-swaps and
+    restores this same global model).
     """
-    if extraction_lock.any_extraction_job_active(db):
+    if extraction_lock.any_ner_job_active(db):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot change the model while an extraction job is running",
@@ -890,6 +918,64 @@ def set_active_model(
 # ================================================
 # Training / monitoring routes
 # ================================================
+
+
+def _bioner_conflict_detail(resp: requests.Response) -> dict:
+    """Extract bioner's 409 conflict ``detail`` for pass-through to the client.
+
+    bioner returns ``{"detail": {"error": "TRAINING_BUSY" | "TRAINING_STOPPING",
+    "message": ..., "suggestion": ...}}``. Forward that structured detail so the
+    frontend can branch on the error code; fall back to a generic busy detail if
+    the body isn't shaped as expected.
+    """
+    try:
+        detail = resp.json().get("detail")
+    except ValueError:
+        detail = None
+    if isinstance(detail, dict) and detail.get("error"):
+        return detail
+    return {
+        "error": "TRAINING_BUSY",
+        "message": "Another training job is already running",
+        "suggestion": "Wait for current training to finish",
+    }
+
+
+TRAINER_DIED_MESSAGE = (
+    "Training stopped unexpectedly — the training process was terminated, most "
+    "likely because the computer ran out of memory (RAM). Try a smaller base "
+    "model, a lower batch size (under Advanced), or fewer training records; if "
+    "you run Docker Desktop, allocating it more memory also helps."
+)
+
+# Runs younger than this are never probed: bioner registers a run shortly
+# after start, and probing inside that window would misread it as dead.
+RECONCILE_GRACE_SECONDS = 120
+
+
+def _reconcile_run_liveness(db: Session, run: TrainingRun) -> bool:
+    """Verify a DB-active run is still alive on bioner; mark it failed if not.
+
+    Returns False when the run was just marked failed. bioner being
+    unreachable means *unknown*, not dead — the run is left untouched.
+    """
+    if run.status not in ("pending", "running"):
+        return True
+    created = run.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - created < timedelta(
+        seconds=RECONCILE_GRACE_SECONDS
+    ):
+        return True
+    try:
+        snapshot = bioner_client.get_training_status(run.id)
+    except requests.RequestException:
+        return True
+    if snapshot is not None and snapshot.get("status") == "running":
+        return True
+    training_service.fail_run(db, run.id, TRAINER_DIED_MESSAGE)
+    return False
 
 
 @router.post("/training/start", response_model=TrainingStartResponse)
@@ -922,17 +1008,7 @@ def start_training(
     # bioner whether each still-active run is genuinely running; mark the rest
     # failed so a new run can start.
     for run in training_service.get_active_runs_for_datasets(db, train_ids):
-        try:
-            snapshot = bioner_client.get_training_status(run.id)
-        except requests.RequestException:
-            # bioner unreachable -> can't confirm; leave the run active (the
-            # start call below will fail loudly if bioner is genuinely down).
-            continue
-        still_running = snapshot is not None and snapshot.get("status") == "running"
-        if not still_running:
-            training_service.fail_run(
-                db, run.id, "Stale run cleared: trainer was no longer running."
-            )
+        _reconcile_run_liveness(db, run)
 
     # Reject a second genuinely-concurrent run touching any of the datasets.
     if training_service.has_active_run_for_datasets(db, train_ids):
@@ -978,6 +1054,20 @@ def start_training(
                 "train_batch_size": req.train_batch_size,
             }
         )
+    except requests.HTTPError as exc:
+        # A 409 from bioner means the trainer slot is occupied: another run is
+        # genuinely active (TRAINING_BUSY) or a stopped run hasn't wound down yet
+        # (TRAINING_STOPPING). Surface the machine-readable reason so the client
+        # can show the right message (and retry on STOPPING) instead of the run
+        # silently landing as "failed".
+        resp = exc.response
+        if resp is not None and resp.status_code == status.HTTP_409_CONFLICT:
+            training_service.fail_run(db, run.id, "trainer busy: run not started")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_bioner_conflict_detail(resp),
+            ) from exc
+        training_service.fail_run(db, run.id, f"failed to start trainer: {exc}")
     except Exception as exc:  # trainer unreachable -> mark failed, but still return run
         training_service.fail_run(db, run.id, f"failed to start trainer: {exc}")
     return TrainingStartResponse(run_id=run.id)
@@ -1000,9 +1090,21 @@ def stop_training(
 def _compute_dataset_stats(db: Session, dataset_ids: list) -> dict:
     """Compute aggregated stats across the given dataset IDs.
 
-    Returns a dict with ``record_count``, ``term_count``, and
-    ``label_distribution`` (label -> count mapping).
+    Returns both TOTAL stats (every record/term in the datasets) and REVIEWED
+    stats (only the training-eligible subset). Training and evaluation use only
+    reviewed records with valid character offsets — see
+    ``gliner_data_service.load_reviewed_training_data`` — so the reviewed_*
+    figures mirror what actually trains.
+
+    Keys:
+        ``record_count`` / ``term_count`` / ``label_distribution`` — TOTAL over
+            the whole dataset (kept as-is for back-compat).
+        ``reviewed_record_count`` / ``reviewed_term_count`` /
+            ``reviewed_label_distribution`` — the reviewed, training-eligible
+            subset (``Record.reviewed`` is True and the term has non-null
+            ``start_position`` and ``end_position``).
     """
+    # --- TOTAL: whole dataset ---
     record_count = db.exec(
         select(func.count(Record.id)).where(Record.dataset_id.in_(dataset_ids))
     ).one()
@@ -1017,11 +1119,51 @@ def _compute_dataset_stats(db: Session, dataset_ids: list) -> dict:
         .where(Record.dataset_id.in_(dataset_ids))
         .group_by(SourceTerm.label)
     ).all()
+
+    # --- REVIEWED: mirror the trainer's predicate exactly ---
+    reviewed_record_count = db.exec(
+        select(func.count(Record.id))
+        .where(Record.dataset_id.in_(dataset_ids))
+        .where(Record.reviewed == True)  # noqa: E712
+    ).one()
+    reviewed_term_where = (
+        Record.dataset_id.in_(dataset_ids),
+        Record.reviewed == True,  # noqa: E712
+        SourceTerm.start_position.is_not(None),
+        SourceTerm.end_position.is_not(None),
+    )
+    reviewed_term_count = db.exec(
+        select(func.count(SourceTerm.id))
+        .join(Record, Record.id == SourceTerm.record_id)
+        .where(*reviewed_term_where)
+    ).one()
+    reviewed_rows = db.exec(
+        select(SourceTerm.label, func.count(SourceTerm.id))
+        .join(Record, Record.id == SourceTerm.record_id)
+        .where(*reviewed_term_where)
+        .group_by(SourceTerm.label)
+    ).all()
+
     return {
         "record_count": record_count,
         "term_count": term_count,
         "label_distribution": {label: count for label, count in rows},
+        "reviewed_record_count": reviewed_record_count,
+        "reviewed_term_count": reviewed_term_count,
+        "reviewed_label_distribution": {label: count for label, count in reviewed_rows},
     }
+
+
+def _full_stats_response(stats: dict) -> FullStatsResponse:
+    """Serialize ``_compute_dataset_stats`` output into the API response."""
+    return FullStatsResponse(
+        totalRecords=stats["record_count"],
+        totalTerms=stats["term_count"],
+        labelDistribution=stats["label_distribution"],
+        reviewedRecords=stats["reviewed_record_count"],
+        reviewedTerms=stats["reviewed_term_count"],
+        reviewedLabelDistribution=stats["reviewed_label_distribution"],
+    )
 
 
 @router.get("/datasets/{dataset_id}/full-stats", response_model=FullStatsResponse)
@@ -1030,25 +1172,7 @@ def full_stats(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ):
-    total_records = db.exec(
-        select(func.count(Record.id)).where(Record.dataset_id == dataset_id)
-    ).one()
-    total_terms = db.exec(
-        select(func.count(SourceTerm.id))
-        .join(Record, Record.id == SourceTerm.record_id)
-        .where(Record.dataset_id == dataset_id)
-    ).one()
-    rows = db.exec(
-        select(SourceTerm.label, func.count(SourceTerm.id))
-        .join(Record, Record.id == SourceTerm.record_id)
-        .where(Record.dataset_id == dataset_id)
-        .group_by(SourceTerm.label)
-    ).all()
-    return FullStatsResponse(
-        totalRecords=total_records,
-        totalTerms=total_terms,
-        labelDistribution={label: count for label, count in rows},
-    )
+    return _full_stats_response(_compute_dataset_stats(db, [dataset_id]))
 
 
 @router.post("/datasets/full-stats", response_model=FullStatsResponse)
@@ -1058,12 +1182,7 @@ def full_stats_multi(
     db: Session = Depends(get_session),
 ):
     """Aggregate record/term counts and label distribution across datasets."""
-    stats = _compute_dataset_stats(db, req.dataset_ids)
-    return FullStatsResponse(
-        totalRecords=stats["record_count"],
-        totalTerms=stats["term_count"],
-        labelDistribution=stats["label_distribution"],
-    )
+    return _full_stats_response(_compute_dataset_stats(db, req.dataset_ids))
 
 
 def _run_summary(db: Session, run: TrainingRun) -> TrainingRunSummary:
@@ -1106,6 +1225,66 @@ def _get_owned_run(db: Session, run_id: int, current_user: User) -> TrainingRun:
             detail="Not authorized to access this run",
         )
     return run
+
+
+@router.get("/runs/active", response_model=Optional[ActiveTrainingRunResponse])
+def active_run(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Return the current in-flight (pending/running) training run, or null.
+
+    Lets the Monitor page rehydrate live progress after navigating away and back
+    or after a full page reload: the loss curve, step counters and epoch bounds
+    are returned in one call so the UI can resume without waiting for the next
+    websocket event. Only surfaces a run the caller owns.
+    """
+    run = training_service.get_active_run(db)
+    if run is None:
+        return None
+    dataset = db.get(Dataset, run.dataset_id)
+    if dataset is not None and dataset.user_id != current_user.id:
+        return None
+
+    train_ids = training_service.get_dataset_ids(db, run.id, role="train") or [
+        run.dataset_id
+    ]
+
+    # The trainer may have died without a final event (e.g. OOM-killed);
+    # surface the failure once so the Monitor shows why instead of a stuck run.
+    if not _reconcile_run_liveness(db, run):
+        db.refresh(run)
+        return ActiveTrainingRunResponse(
+            run_id=run.id,
+            dataset_ids=train_ids,
+            status="failed",
+            error_message=run.error_message,
+        )
+    metrics = training_service.get_run_metrics(db, run.id)
+    ordered = sorted(
+        metrics,
+        key=lambda m: (m.step is None, m.step if m.step is not None else 0, m.epoch),
+    )
+    stats = run.train_stats or {}
+    steps = [m.step for m in metrics if m.step is not None]
+    epochs = [m.epoch for m in metrics if m.epoch is not None]
+    current_step = max(steps) if steps else None
+    return ActiveTrainingRunResponse(
+        run_id=run.id,
+        dataset_ids=train_ids,
+        status=run.status,
+        total_steps=stats.get("total_steps"),
+        current_step=current_step,
+        num_epochs=stats.get("num_epochs"),
+        current_epoch=max(epochs) if epochs else None,
+        metrics=[
+            TrainingMetricPoint(
+                epoch=m.epoch, loss=m.loss, step=m.step, eval_loss=m.eval_loss
+            )
+            for m in ordered
+        ],
+        phase=training_service.derive_training_phase(db, run, current_step),
+    )
 
 
 @router.get("/datasets/{dataset_id}/runs", response_model=TrainingRunsOutput)

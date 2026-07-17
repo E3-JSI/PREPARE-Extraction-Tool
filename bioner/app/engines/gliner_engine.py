@@ -21,8 +21,10 @@ class GlinerEngine(BaseEngine):
         # Resolve from the local directory when the model path exists on disk;
         # otherwise treat it as a HF-hub id and allow network resolution.
         local_only = os.path.isdir(self.model)
+        # load_tokenizer=True is required under gliner 0.2.26 — without it the
+        # tokenizer is left unset and predict_entities returns no entities.
         self.model = GLiNER.from_pretrained(self.model,
-                                            load_tokenizer=False,
+                                            load_tokenizer=True,
                                             local_files_only=local_only)
         self.model.to(self.device)
 

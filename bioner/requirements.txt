@@ -1,8 +1,8 @@
 torch==2.8.0
-transformers==4.51.0
+transformers==4.51.3
 peft==0.17.1
 litserve==0.2.16
-gliner==0.2.22
+gliner==0.2.26
 # gliner2 engine is not fully implemented yet — re-enable with the engine when ready.
 # gliner2==1.1.2
 bitsandbytes==0.48.1

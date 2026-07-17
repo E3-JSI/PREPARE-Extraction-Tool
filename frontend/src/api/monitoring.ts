@@ -1,11 +1,13 @@
 import { apiRequest } from "./client";
 import type {
   ActiveModelResponse,
+  ActiveTrainingRun,
   DatasetsOutput,
   MessageOutput,
   ModelDetailResponse,
   ModelsOutput,
   ModelSummary,
+  RescanModelsResponse,
   MonitorDatasetStats,
   MonitorRun,
   RunUpdate,
@@ -49,9 +51,23 @@ export function deleteRun(runId: number) {
   });
 }
 
+/** Delete a model: its on-disk folder (via bioner) and its DB row. Works for
+ * discovered models with no training run; the producing run is kept as history. */
+export function deleteModel(modelId: number) {
+  return apiRequest<MessageOutput>(`/bioner/models/${modelId}`, {
+    method: "DELETE",
+  });
+}
+
 /** Per-epoch loss curve for a single run, ordered by epoch. */
 export function getRunMetrics(runId: number) {
   return apiRequest<TrainingMetric[]>(`/bioner/runs/${runId}/metrics`);
+}
+
+/** The current in-flight training run (null if none), used to rehydrate live
+ * progress on the Monitor page after navigation or a full page reload. */
+export function getActiveRun() {
+  return apiRequest<ActiveTrainingRun | null>("/bioner/runs/active");
 }
 
 /* ---------------- MODELS ---------------- */
@@ -60,6 +76,14 @@ export function getRunMetrics(runId: number) {
 export async function getModels(): Promise<ModelSummary[]> {
   const res = await apiRequest<ModelsOutput>("/bioner/models");
   return res.models;
+}
+
+/** Rescan bioner's models dir, reconcile the DB, and return the enriched list.
+ *  This is the only write path for model discovery (upsert + delete-missing). */
+export function rescanModels() {
+  return apiRequest<RescanModelsResponse>("/bioner/models/rescan", {
+    method: "POST",
+  });
 }
 
 /** The GLOBAL active extraction model (null active_model = bioner default). */

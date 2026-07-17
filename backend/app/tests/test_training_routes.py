@@ -95,7 +95,14 @@ def test_full_stats_shape(client):
     resp = client.get(f"/api/v1/bioner/datasets/{client.dataset_id}/full-stats")
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body) >= {"totalRecords", "totalTerms", "labelDistribution"}
+    assert set(body) >= {
+        "totalRecords",
+        "totalTerms",
+        "labelDistribution",
+        "reviewedRecords",
+        "reviewedTerms",
+        "reviewedLabelDistribution",
+    }
     assert body["totalRecords"] >= 1
 
 
@@ -106,8 +113,107 @@ def test_full_stats_multi_shape(client):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body) >= {"totalRecords", "totalTerms", "labelDistribution"}
+    assert set(body) >= {
+        "totalRecords",
+        "totalTerms",
+        "labelDistribution",
+        "reviewedRecords",
+        "reviewedTerms",
+        "reviewedLabelDistribution",
+    }
     assert body["totalRecords"] >= 1
+
+
+def test_full_stats_scopes_reviewed_to_training_eligible(client):
+    """reviewed_* counts only reviewed records + terms with valid offsets.
+
+    The fixture dataset already has one unreviewed record with no terms. Add:
+      - a reviewed record with two well-formed terms (Drug, Disease) and one
+        term with null positions (excluded from the reviewed term count);
+      - an unreviewed record with a well-formed term whose label (Symptom)
+        exists ONLY in unreviewed data (→ 0 reviewed, 1 total).
+    """
+    from datetime import datetime, timezone
+
+    from app.models_db import Record, SourceTerm
+
+    db = client.session
+
+    reviewed_rec = Record(
+        patient_id="p2",
+        visit_date=datetime.now(timezone.utc),
+        text="aspirin and diabetes",
+        dataset_id=client.dataset_id,
+        reviewed=True,
+    )
+    unreviewed_rec = Record(
+        patient_id="p3",
+        visit_date=datetime.now(timezone.utc),
+        text="cough",
+        dataset_id=client.dataset_id,
+        reviewed=False,
+    )
+    db.add(reviewed_rec)
+    db.add(unreviewed_rec)
+    db.commit()
+    db.refresh(reviewed_rec)
+    db.refresh(unreviewed_rec)
+
+    db.add_all(
+        [
+            # Reviewed + valid offsets -> counted.
+            SourceTerm(
+                value="aspirin",
+                label="Drug",
+                start_position=0,
+                end_position=7,
+                record_id=reviewed_rec.id,
+            ),
+            SourceTerm(
+                value="diabetes",
+                label="Disease",
+                start_position=12,
+                end_position=20,
+                record_id=reviewed_rec.id,
+            ),
+            # Reviewed but null offsets -> excluded from reviewed term count.
+            SourceTerm(
+                value="aspirin",
+                label="Drug",
+                start_position=None,
+                end_position=None,
+                record_id=reviewed_rec.id,
+            ),
+            # Unreviewed record -> excluded from all reviewed_* figures.
+            SourceTerm(
+                value="cough",
+                label="Symptom",
+                start_position=0,
+                end_position=5,
+                record_id=unreviewed_rec.id,
+            ),
+        ]
+    )
+    db.commit()
+
+    resp = client.post(
+        "/api/v1/bioner/datasets/full-stats",
+        json={"dataset_ids": [client.dataset_id]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # Totals: 3 records (fixture + 2), 4 terms, all labels present.
+    assert body["totalRecords"] == 3
+    assert body["totalTerms"] == 4
+    assert body["labelDistribution"] == {"Drug": 2, "Disease": 1, "Symptom": 1}
+
+    # Reviewed: only the reviewed record; its null-offset term is excluded.
+    assert body["reviewedRecords"] == 1
+    assert body["reviewedTerms"] == 2
+    assert body["reviewedLabelDistribution"] == {"Drug": 1, "Disease": 1}
+    # Symptom exists only in unreviewed data -> absent from reviewed dist.
+    assert "Symptom" not in body["reviewedLabelDistribution"]
 
 
 def test_start_multi_dataset_records_links(client):
@@ -207,6 +313,51 @@ def test_start_rejects_concurrent_active_run(client):
     assert first.status_code == 200
     second = client.post("/api/v1/bioner/training/start", json=payload)
     assert second.status_code == 409
+
+
+def test_start_propagates_bioner_busy_409(client, monkeypatch):
+    """A 409 from bioner is surfaced with its machine-readable reason code.
+
+    Instead of silently marking the run failed and returning success, the proxy
+    must return 409 with bioner's ``detail`` so the frontend can distinguish a
+    genuinely-busy trainer from one that is still stopping (and retry).
+    """
+    import requests
+
+    class _Resp:
+        status_code = 409
+
+        def json(self):
+            return {
+                "detail": {
+                    "error": "TRAINING_STOPPING",
+                    "message": "Previous training run is still stopping",
+                    "suggestion": "Retry in a moment",
+                }
+            }
+
+    def _raise(*args, **kwargs):
+        raise requests.HTTPError(response=_Resp())
+
+    monkeypatch.setattr("app.services.bioner_client.start_training", _raise)
+
+    resp = client.post(
+        "/api/v1/bioner/training/start",
+        json={
+            "dataset_id": client.dataset_id,
+            "labels": ["Drug"],
+            "base_model": "urchade/gliner_small-v2.1",
+            "val_ratio": 0.1,
+        },
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "TRAINING_STOPPING"
+
+    # The created run must not linger as active — it is marked failed so the
+    # datasets aren't wedged.
+    db = client.session
+    runs = db.exec(select(TrainingRun)).all()
+    assert runs and all(r.status == "failed" for r in runs)
 
 
 def test_list_runs_paginated_and_enriched(client):
@@ -428,6 +579,10 @@ def test_start_training_snapshots_train_stats(client):
     assert run is not None
     assert run.train_stats is not None
     assert run.train_stats["record_count"] >= 1
+    # The snapshot also carries the reviewed, training-eligible subset.
+    assert "reviewed_record_count" in run.train_stats
+    assert "reviewed_term_count" in run.train_stats
+    assert "reviewed_label_distribution" in run.train_stats
     assert client.dataset_id in run.train_stats["train_dataset_ids"]
 
 
@@ -608,6 +763,8 @@ def test_training_start_sets_total_steps(client):
 
 def test_start_training_reconciles_stale_run(client, monkeypatch):
     """A 'running' run that bioner no longer tracks must not wedge new training."""
+    from datetime import datetime, timedelta, timezone
+
     from app.services import training_service
     import app.services.bioner_client as bioner_client_mod
     from app.models_db import TrainingRun
@@ -620,6 +777,10 @@ def test_start_training_reconciles_stale_run(client, monkeypatch):
         val_ratio=0.1,
     )
     training_service.mark_running(client.session, stale.id)
+    # Age the run past the reconcile grace window (fresh runs are not probed).
+    stale.created_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    client.session.add(stale)
+    client.session.commit()
 
     # bioner returns None (404 / unknown) -> the run is stale.
     monkeypatch.setattr(bioner_client_mod, "get_training_status", lambda run_id: None)
@@ -669,6 +830,114 @@ def test_start_training_blocks_genuinely_active_run(client, monkeypatch):
     assert resp.status_code == 409
     client.session.expire_all()
     assert client.session.get(TrainingRun, active.id).status == "running"
+
+
+def test_active_run_null_when_idle(client):
+    """GET /runs/active returns null (200) when no run is pending/running."""
+    resp = client.get("/api/v1/bioner/runs/active")
+    assert resp.status_code == 200
+    assert resp.json() is None
+
+
+def test_active_run_returns_inflight_progress(client):
+    """A running run is returned with its steps, epoch bounds and loss curve so
+    the Monitor page can rehydrate live progress in one call."""
+    from app.services import training_service
+
+    db = client.session
+    run = training_service.create_run(
+        db,
+        dataset_ids=[client.dataset_id],
+        base_model="urchade/gliner_small-v2.1",
+        labels=["Drug"],
+        val_ratio=0.1,
+    )
+    training_service.mark_running(db, run.id)
+    training_service.set_total_steps(db, run.id, 200)
+    training_service.set_num_epochs(db, run.id, 4)
+    training_service.add_step_metric(db, run.id, step=10, epoch=1, loss=0.5)
+    training_service.add_step_metric(db, run.id, step=20, epoch=1, loss=0.4)
+
+    resp = client.get("/api/v1/bioner/runs/active")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body is not None
+    assert body["run_id"] == run.id
+    assert body["status"] == "running"
+    assert body["dataset_ids"] == [client.dataset_id]
+    assert body["total_steps"] == 200
+    assert body["current_step"] == 20
+    assert body["num_epochs"] == 4
+    assert body["current_epoch"] == 1
+    assert len(body["metrics"]) == 2
+    assert body["metrics"][0]["step"] == 10
+    # Steps have been recorded, so the run is past the pre-training gap.
+    assert body["phase"] == "training"
+
+
+def test_active_run_derives_pretraining_phase(client):
+    """The active-run endpoint derives the live pre-training phase from persisted
+    state so the Monitor stepper can rehydrate mid-gap (before the first step)."""
+    from app.services import training_service
+
+    db = client.session
+    run = training_service.create_run(
+        db,
+        dataset_ids=[client.dataset_id],
+        base_model="urchade/gliner_small-v2.1",
+        labels=["Drug"],
+        val_ratio=0.1,
+    )
+    training_service.mark_running(db, run.id)
+
+    def current_phase():
+        resp = client.get("/api/v1/bioner/runs/active")
+        assert resp.status_code == 200
+        return resp.json()["phase"]
+
+    # Nothing recorded yet: model is loading and data is being prepared.
+    assert current_phase() == "loading"
+
+    # training_start recorded total_steps → baseline evaluation is running.
+    training_service.set_total_steps(db, run.id, 200)
+    assert current_phase() == "baseline"
+
+    # baseline evaluation stored → trainer is initializing.
+    training_service.record_baseline_evaluation(db, run.id, {"Drug": {"exact_f1": 0.4}})
+    assert current_phase() == "init"
+
+    # first training step emitted → training.
+    training_service.add_step_metric(db, run.id, step=1, epoch=1, loss=0.5)
+    assert current_phase() == "training"
+
+
+def test_active_run_hidden_from_other_user(client):
+    """A run whose dataset belongs to another user is not surfaced."""
+    from app.models_db import Dataset, User
+    from app.services import training_service
+
+    db = client.session
+    other = User(username="other", hashed_password="h")
+    db.add(other)
+    db.commit()
+    db.refresh(other)
+    other_ds = Dataset(name="ods", labels=["Drug"], user_id=other.id)
+    db.add(other_ds)
+    db.commit()
+    db.refresh(other_ds)
+
+    run = training_service.create_run(
+        db,
+        dataset_ids=[other_ds.id],
+        base_model="b",
+        labels=["Drug"],
+        val_ratio=0.1,
+    )
+    training_service.mark_running(db, run.id)
+
+    resp = client.get("/api/v1/bioner/runs/active")
+    assert resp.status_code == 200
+    assert resp.json() is None
 
 
 def test_epoch_update_not_persisted_but_train_log_is(client):

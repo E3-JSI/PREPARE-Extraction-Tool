@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
-import { ModelDetail } from "./ModelsView";
+import { ModelDetail } from ".";
 
 const meta = {
   title: "Monitor/ModelDetail",
@@ -25,6 +25,9 @@ export const TrainedModel: Story = {
         record_count: 120,
         term_count: 540,
         label_distribution: { Drug: 240, Disease: 180, Symptom: 120 },
+        reviewed_record_count: 90,
+        reviewed_term_count: 410,
+        reviewed_label_distribution: { Drug: 190, Disease: 130, Symptom: 90 },
       },
       labels: ["Drug", "Disease", "Symptom"],
       per_label_baseline: {

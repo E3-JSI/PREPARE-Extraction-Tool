@@ -48,6 +48,11 @@ const LabelSelector = ({ datasetStats, onChange }: Props) => {
 
   if (!datasetStats?.labelDistribution) return null;
 
+  // The total distribution is the source of the label list (it contains every
+  // label in the dataset); reviewed counts default to 0 for labels that only
+  // appear in not-yet-reviewed records.
+  const reviewedDist = datasetStats.reviewedLabelDistribution ?? {};
+
   return (
     <div className={styles["label-selector"]}>
       <h3 className={styles["label-selector__title"]}>Select labels for training</h3>
@@ -65,7 +70,7 @@ const LabelSelector = ({ datasetStats, onChange }: Props) => {
                 [styles["label-toggle--active"]]: active,
               })}
             >
-              {label} ({datasetStats.labelDistribution[label]})
+              {label} — {reviewedDist[label] ?? 0} / {datasetStats.labelDistribution[label]}
             </button>
           );
         })}

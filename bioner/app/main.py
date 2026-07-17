@@ -7,6 +7,7 @@ from app.engines import build_engine
 from app.model_manager import STATE_PATH, read_desired, read_model_metadata, write_desired
 from app.routes_model import register_model_context, router as model_router
 from app.routes_training import router as training_router
+from app.worker_supervisor import start_worker_supervisor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -174,6 +175,8 @@ if __name__ == "__main__":
     server.app.include_router(model_router)
     # Wire the activate route and reset the desired-model state to the default so
     # a stale state file from a previous run can't change the startup model.
-    register_model_context(server, args.model)
+    register_model_context(server, args.model, args.engine)
     write_desired(args.model, model_metadata)
+    # Exit on inference-worker death so the container restart policy recovers.
+    start_worker_supervisor()
     server.run(host=args.host, port=args.port)

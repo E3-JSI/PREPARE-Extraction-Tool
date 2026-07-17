@@ -1,75 +1,173 @@
 :root {
-    font-family: 'Nunito Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-    line-height: 1.5;
-    font-weight: 400;
+  font-family: var(--font-family);
+  line-height: var(--line-height);
+  font-weight: var(--weight-regular);
 
-    color-scheme: light;
-    color: #374151;
-    background-color: #f8fafc;
+  color-scheme: light;
+  color: var(--color-text);
+  background-color: var(--color-app-bg);
 
-    font-synthesis: none;
-    text-rendering: optimizeLegibility;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 :root {
-    --color-primary: #144d70;
-    --color-primary-dark: #11415e;
-    --color-success: #269b6f;
-    --color-error: #dc2626;
-    --color-info: #3b82f6;
-    --color-warning: #f59e0b;
-    --color-text: #374151;
-    --color-text-muted: #6b7280;
-    --color-border: #e5e7eb;
-    --color-surface: #ffffff;
-    --color-surface-alt: #f9fafb;
-    --space-1: 8px;
-    --space-2: 12px;
-    --space-3: 16px;
-    --space-4: 24px;
-    --space-5: 32px;
-    --radius-sm: 4px;
-    --radius-md: 6px;
-    --radius-lg: 8px;
-    --radius-xl: 12px;
-    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08);
+  /* Brand */
+  --color-primary: #144d70;
+  --color-primary-dark: #11415e;
+  --color-accent: #269b6f;
+
+  /* Semantic — base / hover / tint */
+  --color-success: #269b6f;
+  --color-success-hover: #20855f;
+  --color-success-tint: #d1fae5;
+  --color-error: #dc2626;
+  --color-error-hover: #b91c1c;
+  --color-error-tint: #fef2f2;
+  --color-error-border: #fecaca;
+  --color-warning: #f59e0b;
+  --color-warning-hover: #d97706;
+  --color-warning-tint: #fef3c7;
+  --color-info: #3b82f6;
+  --color-info-hover: #2563eb;
+  --color-info-tint: #eff6ff;
+
+  /* Neutral ramp */
+  --color-gray-50: #f9fafb;
+  --color-gray-100: #f3f4f6;
+  --color-gray-200: #e5e7eb;
+  --color-gray-300: #d1d5db;
+  --color-gray-400: #9ca3af;
+  --color-gray-500: #6b7280;
+  --color-gray-700: #374151;
+  --color-gray-900: #1e293b;
+
+  /* Semantic aliases */
+  --color-text: #374151;
+  --color-text-muted: #6b7280;
+  --color-border: #e5e7eb;
+  --color-surface: #ffffff;
+  --color-surface-alt: #f9fafb;
+  --color-app-bg: #f8fafc;
+
+  /* Typography */
+  --font-family: "Nunito Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --text-2xl: 20px;
+  --text-3xl: 24px;
+  --text-4xl: 28px;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --line-height: 1.5;
+
+  /* Spacing (8px rhythm) */
+  --space-1: 8px;
+  --space-2: 12px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 32px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* Elevation */
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-drawer: -4px 0 20px rgba(0, 0, 0, 0.15);
+  --shadow-overlay: 0 4px 12px rgba(0, 0, 0, 0.15);
+
+  /* Term-extraction label palette (9 colors). Each label is a light chip with dark
+       text; --hover is a more-saturated-but-still-light tint so the dark text keeps
+       WCAG AA >= 4.5:1 against both --bg and --hover. --border is the accent ring
+       used on the label buttons' hover/active state. */
+  --label1-bg: #fca5a5;
+  --label1-text: #7f1d1d;
+  --label1-hover: #ffbcbc;
+  --label1-border: #f87171;
+  --label2-bg: #c3f5e2;
+  --label2-text: #16593f;
+  --label2-hover: #afffe1;
+  --label2-border: #4ade80;
+  --label3-bg: #d4e6f2;
+  --label3-text: #13425e;
+  --label3-hover: #bfe4fd;
+  --label3-border: #60a5fa;
+  --label4-bg: #fcffa7;
+  --label4-text: #713f12;
+  --label4-hover: #fbff93;
+  --label4-border: #facc15;
+  --label5-bg: #ffd8ef;
+  --label5-text: #61103f;
+  --label5-hover: #ffc4e7;
+  --label5-border: #e879f9;
+  --label6-bg: #5eead4;
+  --label6-text: #134e4a;
+  --label6-hover: #49ffe2;
+  --label6-border: #2dd4bf;
+  --label7-bg: #fdba74;
+  --label7-text: #7c2d12;
+  --label7-hover: #ffb05e;
+  --label7-border: #fb923c;
+  --label8-bg: #c4b5fd;
+  --label8-text: #4c1d95;
+  --label8-hover: #b39fff;
+  --label8-border: #c084fc;
+  --label9-bg: #94a3b8;
+  --label9-text: #1e293b;
+  --label9-hover: #719ddb;
+  --label9-border: #64748b;
 }
 
 * {
-    box-sizing: border-box;
+  box-sizing: border-box;
 }
 
 #root {
-    width: 100%;
-    min-height: 100vh;
+  width: 100%;
+  min-height: 100vh;
 }
 
 body {
-    margin: 0;
-    min-width: 320px;
-    min-height: 100vh;
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
 }
 
 a {
-    font-weight: 500;
-    color: #1e3a5f;
-    text-decoration: inherit;
+  font-weight: var(--weight-medium);
+  color: var(--color-primary-dark);
+  text-decoration: inherit;
 }
 
 a:hover {
-    color: #4CAF50;
+  color: var(--color-accent);
 }
 
-h1, h2, h3, h4, h5, h6 {
-    color: #1e3a5f;
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: var(--color-primary-dark);
 }
 
 button {
-    font-family: inherit;
+  font-family: inherit;
 }
 
-input, textarea, select {
-    font-family: inherit;
+input,
+textarea,
+select {
+  font-family: inherit;
 }

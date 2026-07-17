@@ -26,6 +26,7 @@ export default defineConfig(({ mode }) => {
         "/api": {
           target: env.BACKEND_HOST || "http://localhost:8000",
           changeOrigin: true,
+          ws: true, // forward WebSocket upgrades (Monitor training socket)
           timeout: 600_000, // 10 min — match XHR timeout
         },
       },

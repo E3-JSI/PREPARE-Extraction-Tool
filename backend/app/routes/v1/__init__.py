@@ -6,6 +6,7 @@ from app.routes.v1 import (
     source_term,
     clusters,
     bioner,
+    live_eval,
     training_events,
     vocabularies,
     mappings,
@@ -26,6 +27,7 @@ api_router.include_router(
 )
 api_router.include_router(clusters.router, prefix="/clusters", tags=["Clusters"])
 api_router.include_router(bioner.router, prefix="/bioner", tags=["BioNER"])
+api_router.include_router(live_eval.router, prefix="/bioner", tags=["BioNER"])
 api_router.include_router(
     training_events.router, prefix="/bioner", tags=["Training"]
 )

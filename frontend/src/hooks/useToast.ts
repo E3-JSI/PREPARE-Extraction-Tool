@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, createContext, useContext } from "react";
 import type { ToastType } from "@components/Toast";
 
 interface ToastState {
@@ -15,6 +15,30 @@ interface UseToastReturn {
   error: (message: string) => void;
   warning: (message: string) => void;
   info: (message: string) => void;
+}
+
+/**
+ * The imperative slice of the toast API, exposed through `ToastApiContext`.
+ * Every field is a stable callback, so the object is safe to reference from
+ * effect dependency arrays and context values without triggering rerenders.
+ */
+export interface ToastApi {
+  showToast: (message: string, type?: ToastType) => void;
+  success: (message: string) => void;
+  error: (message: string) => void;
+  warning: (message: string) => void;
+  info: (message: string) => void;
+}
+
+export const ToastApiContext = createContext<ToastApi | null>(null);
+
+/** Access the stable toast API. Must be used within a `ToastProvider`. */
+export function useToastApi(): ToastApi {
+  const ctx = useContext(ToastApiContext);
+  if (!ctx) {
+    throw new Error("useToastApi must be used within a ToastProvider");
+  }
+  return ctx;
 }
 
 export function useToast(): UseToastReturn {

@@ -39,6 +39,9 @@ async def receive_training_event(payload: dict, db: Session = Depends(get_sessio
         total_steps = payload.get("total_steps")
         if total_steps is not None:
             training_service.set_total_steps(db, run_id, int(total_steps))
+        num_epochs = payload.get("num_epochs")
+        if num_epochs is not None:
+            training_service.set_num_epochs(db, run_id, int(num_epochs))
     elif event_type == "train_log":
         step = payload.get("step")
         if step is not None:

@@ -17,7 +17,7 @@
 }
 
 .button:focus-visible {
-  outline: 2px solid #3b82f6;
+  outline: 2px solid var(--color-info);
   outline-offset: 2px;
 }
 
@@ -57,64 +57,64 @@
    ==================================== */
 
 .button--primary {
-  background-color: #144d70;
-  color: #ffffff;
+  background-color: var(--color-primary);
+  color: var(--color-surface);
 }
 
 .button--primary:hover:not(:disabled) {
-  background-color: #11415e;
+  background-color: var(--color-primary-dark);
 }
 
 .button--secondary {
   background-color: transparent;
-  color: #333333;
+  color: var(--color-text);
   box-shadow: rgba(0, 0, 0, 0.15) 0px 0px 0px 1px inset;
 }
 
 .button--secondary:hover:not(:disabled) {
-  background-color: #f3f4f6;
+  background-color: var(--color-gray-100);
 }
 
 .button--success {
-  background-color: #269b6f;
-  color: #ffffff;
+  background-color: var(--color-success);
+  color: var(--color-surface);
 }
 
 .button--success:hover:not(:disabled) {
-  background-color: #20855f;
+  background-color: var(--color-success-hover);
 }
 
 .button--danger {
-  background-color: #dc2626;
-  color: #ffffff;
+  background-color: var(--color-error);
+  color: var(--color-surface);
 }
 
 .button--danger:hover:not(:disabled) {
-  background-color: #b91c1c;
+  background-color: var(--color-error-hover);
 }
 
 .button--warning {
-  background-color: #f59e0b;
-  color: #ffffff;
+  background-color: var(--color-warning);
+  color: var(--color-surface);
 }
 
 .button--warning:hover:not(:disabled) {
-  background-color: #d97706;
+  background-color: var(--color-warning-hover);
 }
 
 .button--info {
-  background-color: #3b82f6;
-  color: #ffffff;
+  background-color: var(--color-info);
+  color: var(--color-surface);
 }
 
 .button--info:hover:not(:disabled) {
-  background-color: #2563eb;
+  background-color: var(--color-info-hover);
 }
 
 .button--ghost {
   background: none;
   border: none;
-  color: #144d70;
+  color: var(--color-primary);
   box-shadow: none;
 }
 
@@ -123,14 +123,14 @@
 }
 
 .button--outline {
-  background-color: #ffffff;
-  color: #374151;
-  border: 1px solid #e5e7eb;
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
 }
 
 .button--outline:hover:not(:disabled) {
-  background-color: #f3f4f6;
-  border-color: #d1d5db;
+  background-color: var(--color-gray-100);
+  border-color: var(--color-gray-300);
 }
 
 /* ====================================
@@ -138,27 +138,27 @@
    ==================================== */
 
 .button--ghost.button--color-danger {
-  color: #dc2626;
+  color: var(--color-error);
 }
 
 .button--ghost.button--color-danger:hover:not(:disabled) {
-  color: #b91c1c;
+  color: var(--color-error-hover);
 }
 
 .button--ghost.button--color-primary {
-  color: #11415e;
+  color: var(--color-primary-dark);
 }
 
 .button--ghost.button--color-primary:hover:not(:disabled) {
-  color: #144d70;
+  color: var(--color-primary);
 }
 
 .button--outline.button--color-danger {
-  color: #dc2626;
-  border-color: #fecaca;
+  color: var(--color-error);
+  border-color: var(--color-error-border);
 }
 
 .button--outline.button--color-danger:hover:not(:disabled) {
-  background-color: #fef2f2;
-  border-color: #dc2626;
+  background-color: var(--color-error-tint);
+  border-color: var(--color-error);
 }

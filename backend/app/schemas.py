@@ -75,6 +75,68 @@ class ExtractionJobStatusResponse(BaseModel):
     error_message: Optional[str] = None
 
 
+class ClusterJobStartResponse(BaseModel):
+    """Response when a dataset "cluster all labels" job is queued."""
+
+    job_id: int
+    dataset_id: int
+    total: int
+    status: str
+
+
+class ClusterJobStatusResponse(BaseModel):
+    """Progress snapshot for a dataset cluster-all job (progress unit = labels)."""
+
+    job_id: int
+    dataset_id: int
+    total: int
+    completed: int
+    status: str
+    clustered_labels: List[str] = []
+    skipped_labels: List[str] = []
+    error_message: Optional[str] = None
+
+
+class LiveEvalStartRequest(BaseModel):
+    """Request body to start a user-triggered live evaluation run."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_id: int
+    dataset_id: int
+
+
+class LiveEvalJobStartResponse(BaseModel):
+    """Response when a live-eval job is queued (or completed immediately)."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    job_id: int
+    dataset_id: int
+    model_id: int
+    total: int
+    status: str
+    # Set when the job short-circuits (e.g. no held-out reviewed records).
+    message: Optional[str] = None
+
+
+class LiveEvalJobStatusResponse(BaseModel):
+    """Progress snapshot for a live-eval job, with metrics once computed."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    job_id: int
+    dataset_id: int
+    model_id: int
+    total: int
+    completed: int
+    status: str
+    error_message: Optional[str] = None
+    # Computed metrics: per-label exact/relaxed/overlap P/R/F1 + macro aggregate,
+    # held-out count, and a message for the empty-set case. Null until computed.
+    metrics: Optional[Dict[str, Any]] = None
+
+
 # ================================================
 # Pagination models
 # ================================================
@@ -646,12 +708,26 @@ class AutoMapAllRequest(BaseModel):
     search_type: str = "vector"  # "vector" or "hybrid"
 
 
-class AutoMapAllResponse(BaseModel):
-    """Response for bulk auto-mapping operation"""
+class MappingJobStartResponse(BaseModel):
+    """Response when an auto-map-all job is queued."""
 
+    job_id: int
+    dataset_id: int
+    total: int
+    status: str
+
+
+class MappingJobStatusResponse(BaseModel):
+    """Progress snapshot for an auto-map-all job."""
+
+    job_id: int
+    dataset_id: int
+    total: int
+    completed: int
     mapped_count: int
     failed_count: int
-    total_clusters: int
+    status: str
+    error_message: Optional[str] = None
 
 
 class ConceptHierarchy(BaseModel):
@@ -823,6 +899,26 @@ class TrainingMetricPoint(BaseModel):
     eval_loss: Optional[float] = None
 
 
+class ActiveTrainingRunResponse(BaseModel):
+    """The in-flight training run, returned so the Monitor page can rehydrate
+    live progress after navigation or a full page reload (null when none)."""
+
+    run_id: int
+    dataset_ids: List[int] = Field(default_factory=list)
+    status: str
+    # Set when the run was just reconciled as dead (trainer vanished).
+    error_message: Optional[str] = None
+    total_steps: Optional[int] = None
+    current_step: Optional[int] = None
+    num_epochs: Optional[int] = None
+    current_epoch: Optional[int] = None
+    metrics: List[TrainingMetricPoint] = Field(default_factory=list)
+    # Derived pre-training phase for the Monitor stepper (one of "loading",
+    # "baseline", "init", "training"), or None when no run is in flight. Lets the
+    # stepper rehydrate mid-gap, before the first training step emits a metric.
+    phase: Optional[str] = None
+
+
 class FullStatsRequest(BaseModel):
     """Request body for aggregated stats across multiple datasets."""
 
@@ -830,9 +926,14 @@ class FullStatsRequest(BaseModel):
 
 
 class FullStatsResponse(BaseModel):
+    # Totals over the whole dataset(s).
     totalRecords: int
     totalTerms: int
     labelDistribution: Dict[str, int]
+    # Reviewed, training-eligible subset (what actually trains/evaluates).
+    reviewedRecords: int
+    reviewedTerms: int
+    reviewedLabelDistribution: Dict[str, int]
 
 
 # ================================================
@@ -854,12 +955,42 @@ class ModelSummary(BaseModel):
     score: Optional[float] = None
     run_id: Optional[int] = None  # links a model to its training run
     is_active: bool = False  # is this the global active model?
+    # Provenance: "trained" | "discovered" | "baseline" (null on legacy rows).
+    source: Optional[str] = None
+    # Backing engine: "gliner" | "huggingface" (null for anchors).
+    engine: Optional[str] = None
 
 
 class ModelsOutput(BaseModel):
     """List of trained models available for selection."""
 
     models: List[ModelSummary]
+
+
+class DiscoveredModelSummary(ModelSummary):
+    """A model row enriched with live bioner scan info for the rescan view."""
+
+    # From the on-disk scan: a LoRA/PEFT adapter needs a base model, so it is not
+    # directly selectable as the active extraction model.
+    is_adapter: bool = False
+    # True when this model can be activated in the running bioner process:
+    # its engine matches the launch engine and it is not an adapter.
+    activatable: bool = True
+
+
+class DefaultModelInfo(BaseModel):
+    """bioner's launch default model (what /ner runs when nothing is selected)."""
+
+    name: str
+    engine: Optional[str] = None
+
+
+class RescanModelsResponse(BaseModel):
+    """Reconciled model list plus live bioner engine/default context."""
+
+    models: List[DiscoveredModelSummary]
+    current_engine: Optional[str] = None
+    default_model: Optional[DefaultModelInfo] = None
 
 
 class ModelDetailResponse(BaseModel):

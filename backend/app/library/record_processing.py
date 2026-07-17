@@ -325,6 +325,19 @@ def link_dates_for_record(
 
 
 def auto_link_entities_for_record(db: Session, record: Record, dataset: Dataset) -> None:
+    """Auto-create ``SourceTermLink`` rows for a record during extraction.
+
+    Runs only when the dataset defines ``label_relations`` (directed "has value"
+    label pairs, set at dataset upload). Links a term pair only when the two terms
+    are immediately adjacent (by ``start_position``, nothing between them), share
+    the same sentence segment, and their labels match a relation in text order
+    (``from_label`` before ``to_label``). Idempotent: existing links are skipped,
+    normalized to an unordered pair so a reverse-direction link is not duplicated.
+
+    Model-agnostic: it depends only on the extracted terms' labels and positions,
+    not on which NER model produced them — training or selecting a custom model
+    does not change linking behavior.
+    """
     if not dataset.label_relations:
         return
 
