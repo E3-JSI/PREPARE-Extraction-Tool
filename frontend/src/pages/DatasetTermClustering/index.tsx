@@ -17,8 +17,11 @@ import ClusterCard from "@components/ClusterCard";
 import ClusterOverlay from "@components/ClusterOverlay";
 import DroppableUnclusteredArea from "@components/DroppableUnclusteredArea";
 import TermOverlay from "@components/TermOverlay";
+import ProgressBar from "@components/ProgressBar";
 import { usePageTitle } from "@/hooks/usePageTitle";
 import { useToast } from "@/hooks/useToast";
+import { useClusterAllJob } from "@/hooks/useClusterAllJob";
+import { formatClusterAllSummary } from "@/utils/clusterSummary";
 import * as api from "@/api";
 
 import type { ClusterData, ClusteredTerm } from "@/types";
@@ -45,6 +48,8 @@ export default function DatasetTermClustering() {
   const [isTogglingReview, setIsTogglingReview] = useState(false);
 
   const toast = useToast();
+  const parsedDatasetId = datasetId ? parseInt(datasetId, 10) : 0;
+  const clusterAll = useClusterAllJob(parsedDatasetId);
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     title: string;
@@ -140,6 +145,31 @@ export default function DatasetTermClustering() {
       setError(err instanceof Error ? err.message : "Auto-clustering failed");
     } finally {
       setIsAutoClustering(false);
+    }
+  };
+
+  // Cluster every label in the dataset via the shared background job. Labels with
+  // a reviewed cluster are skipped server-side (re-clustering is destructive).
+  const handleClusterAll = async () => {
+    if (!parsedDatasetId || clusterAll.isRunning) return;
+
+    try {
+      const result = await clusterAll.startClusterAll();
+      if (result) {
+        toast.success(formatClusterAllSummary(result.clustered_labels, result.skipped_labels));
+      }
+      await fetchClusters();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Cluster All Labels failed");
+    }
+  };
+
+  const handleCancelClusterAll = async () => {
+    try {
+      await clusterAll.cancelClusterAll();
+      toast.warning("Clustering was cancelled");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to cancel clustering");
     }
   };
 
@@ -765,12 +795,20 @@ export default function DatasetTermClustering() {
                   <Button
                     variant="primary"
                     onClick={handleAutoClustering}
-                    disabled={isAutoClustering || !selectedLabel}
+                    disabled={isAutoClustering || clusterAll.isRunning || !selectedLabel}
                   >
                     {isAutoClustering ? "Clustering..." : "Auto-Cluster Terms"}
                   </Button>
                 </>
               )}
+              <Button
+                variant="outline"
+                onClick={handleClusterAll}
+                disabled={clusterAll.isRunning || isAutoClustering || labels.length === 0}
+                title="Cluster every label in the dataset. Labels with reviewed clusters are skipped."
+              >
+                {clusterAll.isRunning ? "Clustering All…" : "Cluster All Labels"}
+              </Button>
               <Button
                 variant={labelReviewed ? "success" : "primary"}
                 onClick={handleToggleReview}
@@ -810,10 +848,39 @@ export default function DatasetTermClustering() {
             </div>
           </div>
 
+          {clusterAll.isRunning && (
+            <div className={styles["cluster-all-progress"]}>
+              <span className={styles["cluster-all-progress__label"]}>
+                Clustering all labels
+                {clusterAll.progress && clusterAll.progress.total > 0
+                  ? `: ${clusterAll.progress.completed} / ${clusterAll.progress.total} labels`
+                  : "…"}
+              </span>
+              <div className={styles["cluster-all-progress__bar"]}>
+                <ProgressBar
+                  progress={
+                    clusterAll.progress && clusterAll.progress.total > 0
+                      ? (clusterAll.progress.completed / clusterAll.progress.total) * 100
+                      : 0
+                  }
+                  showPercentage
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="small"
+                onClick={handleCancelClusterAll}
+                disabled={clusterAll.isCancelling}
+              >
+                {clusterAll.isCancelling ? "Cancelling…" : "Cancel"}
+              </Button>
+            </div>
+          )}
+
           {error && (
             <div className={styles.error}>
               {error}
-              <Button variant="ghost" size="icon" onClick={() => setError(null)}>
+              <Button variant="ghost" size="icon" onClick={() => setError(null)} aria-label="Dismiss error">
                 ×
               </Button>
             </div>
@@ -837,6 +904,7 @@ export default function DatasetTermClustering() {
                     <ClusterCard
                       key={cluster.id}
                       cluster={cluster}
+                      labels={labels}
                       onRename={(title) => handleRename(cluster.id, title)}
                       onDelete={() => handleDelete(cluster.id)}
                       onRemoveTerm={handleRemoveTerm}

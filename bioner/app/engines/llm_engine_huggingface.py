@@ -42,16 +42,17 @@ class LLMEngineHuggingFace(BaseEngine):
             quantization_config=quantization_config,
         )
         if self.adapter_model:
-            self.model = PeftModel.from_pretrained(self.model, 
+            self.model = PeftModel.from_pretrained(self.model,
                                                    self.adapter_model)
         self.model = self.model.to(self.device)
+        # Load prompts once and reuse across requests
+        self.prompts = Prompts(prompts_path=self.prompts_path)
 
     def extract_entities(self, 
                          medical_text: str, 
                          labels: list[str]) -> List[Entity]:
         # Create prompt
-        prompts = Prompts(prompts_path=self.prompts_path)
-        message = prompts.create_instruction_message(labels=labels, 
+        message = self.prompts.create_instruction_message(labels=labels,
                                                      medical_text=medical_text)
         input_ids = instructions_formatting_function(message, self.tokenizer)
         # Generate response

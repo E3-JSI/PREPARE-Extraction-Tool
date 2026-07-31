@@ -98,7 +98,6 @@ export function useDatasetExtractionJob(datasetId: number) {
   });
 
   // On mount: check localStorage first, then fall back to the backend active-job endpoint
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const resume = async () => {
       const savedId = localStorage.getItem(storageKey);
@@ -116,6 +115,8 @@ export function useDatasetExtractionJob(datasetId: number) {
       }
     };
     resume();
+    // Mount-only: datasetId/storageKey are read once to resume an in-flight job.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return { isRunning, isCancelling, jobId, progress, startExtraction, cancelExtraction };

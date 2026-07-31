@@ -5,8 +5,8 @@
   justify-content: center;
   min-height: 300px;
   padding: 40px;
-  background-color: #f8fafc;
-  border: 2px dashed #d1d5db;
+  background-color: var(--color-app-bg);
+  border: 2px dashed var(--color-gray-300);
   border-radius: 12px;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -14,13 +14,13 @@
 }
 
 .dropzone:hover {
-  border-color: #1e3a5f;
-  background-color: #f1f5f9;
+  border-color: var(--color-primary-dark);
+  background-color: var(--color-gray-100);
 }
 
 .dropzone--dragging {
-  border-color: #1e3a5f;
-  background-color: #e8f4fc;
+  border-color: var(--color-primary-dark);
+  background-color: var(--color-info-tint);
   border-style: solid;
 }
 
@@ -30,8 +30,8 @@
 }
 
 .dropzone--has-file {
-  border-color: #4caf50;
-  background-color: #f0fdf4;
+  border-color: var(--color-accent);
+  background-color: var(--color-success-tint);
 }
 
 .dropzone__hidden-input {
@@ -47,28 +47,28 @@
 }
 
 .dropzone__icon {
-  color: #9ca3af;
+  color: var(--color-gray-400);
   margin-bottom: 8px;
 }
 
 .dropzone:hover .dropzone__icon,
 .dropzone--dragging .dropzone__icon {
-  color: #1e3a5f;
+  color: var(--color-primary-dark);
 }
 
 .dropzone--has-file .dropzone__icon {
-  color: #4caf50;
+  color: var(--color-accent);
 }
 
 .dropzone__text {
   font-size: 16px;
   font-weight: 500;
-  color: #374151;
+  color: var(--color-text);
 }
 
 .dropzone__or {
   font-size: 14px;
-  color: #9ca3af;
+  color: var(--color-gray-400);
 }
 
 .dropzone__selected-info {
@@ -81,16 +81,16 @@
 .dropzone__file-name {
   font-size: 14px;
   font-weight: 600;
-  color: #374151;
+  color: var(--color-text);
 }
 
 .dropzone__file-size {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--color-text-muted);
 }
 
 .dropzone__error {
   font-size: 13px;
-  color: #dc2626;
+  color: var(--color-error);
   margin-top: 8px;
 }

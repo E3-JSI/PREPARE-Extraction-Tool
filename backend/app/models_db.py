@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import Column, JSON
 from sqlmodel import SQLModel, Field, Relationship
@@ -75,7 +75,9 @@ class Dataset(SQLModel, table=True):
     uploaded: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_modified: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     labels: List[str] = Field(sa_column=Column(JSON))
-    label_relations: List[dict] = Field(default_factory=list, sa_column=Column(JSON, nullable=True))
+    label_relations: List[dict] = Field(
+        default_factory=list, sa_column=Column(JSON, nullable=True)
+    )
     date_label: Optional[str] = Field(default=None, nullable=True)
     status: ProcessingStatus = Field(default=ProcessingStatus.PROCESSING, index=True)
     error_message: Optional[str] = None
@@ -93,6 +95,22 @@ class Dataset(SQLModel, table=True):
     clusters: list["Cluster"] = Relationship(
         back_populates="dataset",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
+    evaluations: list["Evaluation"] = Relationship(
+        back_populates="dataset",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
+
+class ModelTrainRecordLink(SQLModel, table=True):
+    """Link table associating a trained Model with the Records used to train it."""
+
+    model_id: Optional[int] = Field(
+        default=None, foreign_key="model.id", primary_key=True
+    )
+    record_id: Optional[int] = Field(
+        default=None, foreign_key="record.id", primary_key=True
     )
 
 
@@ -124,9 +142,20 @@ class Record(SQLModel, table=True):
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
 
+    # Relationship to SourceTermEx (one-to-many)
+    source_terms_ex: list["SourceTermEx"] = Relationship(
+        back_populates="record",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
     sentence_segments: list["SentenceSegment"] = Relationship(
         back_populates="record",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
+    trained_models: list["Model"] = Relationship(
+        back_populates="train_records",
+        link_model=ModelTrainRecordLink,
     )
 
 
@@ -211,6 +240,189 @@ class SourceTerm(SQLModel, table=True):
     cluster: Optional["Cluster"] = Relationship(back_populates="source_terms")
 
 
+class SourceTermEx(SQLModel, table=True):
+    """
+    Source term model representing an extracted term from a record.
+    """
+
+    __tablename__ = "source_term_ex"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    value: str
+    label: str
+    start_position: Optional[int] = Field(default=None)
+    end_position: Optional[int] = Field(default=None)
+    score: Optional[float] = Field(default=None)
+
+    # Relationship back to Record (many-to-one)
+    record_id: int = Field(foreign_key="record.id", ondelete="CASCADE", nullable=False)
+    record: Optional["Record"] = Relationship(back_populates="source_terms_ex")
+
+    # Relationship back to Model (many-to-one)
+    model_id: int = Field(foreign_key="model.id", ondelete="CASCADE", nullable=False)
+    model: Optional["Model"] = Relationship(back_populates="source_terms")
+
+
+class Model(SQLModel, table=True):
+    __tablename__ = "model"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    version: str
+    base_model: Optional[str] = Field(default=None)
+    path: Optional[str] = Field(default=None)
+    # Provenance of this row: "trained" (produced by a run), "discovered"
+    # (found on disk by a bioner models-dir scan), or "baseline" (comparison
+    # anchor / launch default; typically has no path).
+    source: Optional[str] = Field(default=None)
+    # Engine backing the model: "gliner" | "huggingface" (null for anchors).
+    engine: Optional[str] = Field(default=None)
+    dataset_id: Optional[int] = Field(
+        default=None, foreign_key="dataset.id", ondelete="SET NULL"
+    )
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # Relationship to SourceTermEx (one-to-many)
+    # SourceTermEx extracted with this model
+    source_terms: list["SourceTermEx"] = Relationship(
+        back_populates="model",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
+    # Relationship to Records (many-to-many)
+    # Records used to train this model
+    train_records: list["Record"] = Relationship(
+        back_populates="trained_models",
+        link_model=ModelTrainRecordLink,
+    )
+
+    # Relationship to Evaluation (one-to-many)
+    evaluations: list["Evaluation"] = Relationship(
+        back_populates="model",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
+    # One-to-one back to the training run that produced this model
+    training_run: Optional["TrainingRun"] = Relationship(back_populates="model")
+
+
+class Evaluation(SQLModel, table=True):
+    __tablename__ = "evaluation"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    label: str
+    score: Dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
+
+    # Relationship to Dataset (one-to-many)
+    dataset_id: int = Field(
+        foreign_key="dataset.id", ondelete="CASCADE", nullable=False
+    )
+    dataset: Optional["Dataset"] = Relationship(back_populates="evaluations")
+
+    # Relationship to Model (one-to-many)
+    model_id: int = Field(foreign_key="model.id", ondelete="CASCADE", nullable=False)
+    model: Optional["Model"] = Relationship(back_populates="evaluations")
+
+
+class TrainingRunDatasetLink(SQLModel, table=True):
+    """Associates a TrainingRun with a Dataset, tagged by role.
+
+    A run can train on (and optionally evaluate against) several datasets.
+    ``role`` is ``"train"`` or ``"eval"``. The legacy ``TrainingRun.dataset_id``
+    column is kept as the run's *primary* training dataset (the first selected),
+    so per-dataset run listing and ownership checks keep working unchanged.
+    """
+
+    __tablename__ = "training_run_dataset_link"
+
+    training_run_id: Optional[int] = Field(
+        default=None,
+        foreign_key="training_run.id",
+        primary_key=True,
+        ondelete="CASCADE",
+    )
+    dataset_id: Optional[int] = Field(
+        default=None,
+        foreign_key="dataset.id",
+        primary_key=True,
+        ondelete="CASCADE",
+    )
+    role: str = Field(default="train", primary_key=True)  # "train" | "eval"
+
+
+class TrainingRun(SQLModel, table=True):
+    """A GLiNER training run and its lifecycle. Produces a Model on success."""
+
+    __tablename__ = "training_run"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # Primary training dataset (first of the selected training datasets). The
+    # full multi-dataset membership lives in ``training_run_dataset_link``.
+    dataset_id: int = Field(
+        foreign_key="dataset.id", ondelete="CASCADE", nullable=False, index=True
+    )
+    name: Optional[str] = Field(default=None)
+    base_model: str
+    labels: List[str] = Field(sa_column=Column(JSON))
+    val_ratio: float = Field(default=0.0)
+    status: str = Field(
+        default="pending", index=True
+    )  # pending|running|completed|failed|stopped
+    error_message: Optional[str] = Field(default=None)
+    # Marks the run designated as the dataset's preferred/best model (single per dataset).
+    preferred: bool = Field(default=False)
+    model_id: Optional[int] = Field(
+        default=None, foreign_key="model.id", ondelete="SET NULL"
+    )
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Snapshot of the training datasets' stats AT TRAINING TIME (datasets mutate
+    # afterward). Shape: {train_dataset_ids, eval_dataset_ids, record_count,
+    # term_count, label_distribution, train_size, eval_size, val_ratio}.
+    train_stats: Optional[dict] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+
+    metrics: list["TrainingMetric"] = Relationship(
+        back_populates="run",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+    model: Optional["Model"] = Relationship(back_populates="training_run")
+
+
+class TrainingMetric(SQLModel, table=True):
+    """Per-epoch training metric (loss curve)."""
+
+    __tablename__ = "training_metric"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: int = Field(
+        foreign_key="training_run.id", ondelete="CASCADE", nullable=False, index=True
+    )
+    epoch: int
+    loss: Optional[float] = Field(default=None)
+    # Step-indexed metrics for the live train/eval loss curve. ``step`` is the
+    # trainer global step; ``eval_loss`` is populated only on eval-step rows.
+    step: Optional[int] = Field(default=None, index=True)
+    eval_loss: Optional[float] = Field(default=None)
+
+    run: Optional["TrainingRun"] = Relationship(back_populates="metrics")
+
+
+class AppSettings(SQLModel, table=True):
+    """Single-row, instance-wide application settings.
+
+    Always uses ``id == 1``. Holds the GLOBAL active NER extraction model shared
+    by all users (null = bioner's launch default model).
+    """
+
+    __tablename__ = "app_settings"
+
+    id: Optional[int] = Field(default=1, primary_key=True)
+    active_model_id: Optional[int] = Field(
+        default=None, foreign_key="model.id", ondelete="SET NULL", nullable=True
+    )
+
+
 class Cluster(SQLModel, table=True):
     """
     Cluster model representing a cluster of similar source terms.
@@ -282,7 +494,7 @@ class ExtractionJob(SQLModel, table=True):
     dataset_id: int = Field(
         foreign_key="dataset.id", ondelete="CASCADE", nullable=False, index=True
     )
-
+    model_id: int = Field(foreign_key="model.id", nullable=False, index=True)
     total: int = Field(default=0)
     completed: int = Field(default=0)
     status: str = Field(
@@ -292,6 +504,115 @@ class ExtractionJob(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    currently_used: bool = Field(default=True)  # samo en True
+
+
+class MappingJob(SQLModel, table=True):
+    """
+    Tracks progress for dataset-wide auto-map-all runs.
+
+    Mirrors ExtractionJob: one row per bulk auto-mapping run, polled by the
+    frontend for a progress bar. `completed` ticks once per cluster processed
+    (mapped, failed, or skipped-because-already-mapped); `mapped_count` /
+    `failed_count` carry the final tallies surfaced in the success toast.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    dataset_id: int = Field(
+        foreign_key="dataset.id", ondelete="CASCADE", nullable=False, index=True
+    )
+    total: int = Field(default=0)
+    completed: int = Field(default=0)
+    mapped_count: int = Field(default=0)
+    failed_count: int = Field(default=0)
+    status: str = Field(
+        default="pending", index=True
+    )  # pending|running|completed|failed|cancelled
+    error_message: Optional[str] = Field(default=None)
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ClusterJob(SQLModel, table=True):
+    """
+    Tracks progress for dataset-wide "cluster all labels" runs.
+
+    Keyed on the dataset (no model). Progress is measured in labels: ``total`` is
+    the number of labels in the dataset and ``completed`` increments once per
+    label processed. ``clustered_labels``/``skipped_labels`` record the per-label
+    outcome so the UI can report which labels were (re)clustered and which were
+    skipped because they already had a reviewed cluster.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    dataset_id: int = Field(
+        foreign_key="dataset.id", ondelete="CASCADE", nullable=False, index=True
+    )
+    total: int = Field(default=0)
+    completed: int = Field(default=0)
+    status: str = Field(
+        default="pending", index=True
+    )  # pending|running|completed|failed|cancelled
+    error_message: Optional[str] = Field(default=None)
+
+    clustered_labels: List[str] = Field(
+        default_factory=list, sa_column=Column(JSON, nullable=False)
+    )
+    skipped_labels: List[str] = Field(
+        default_factory=list, sa_column=Column(JSON, nullable=False)
+    )
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    currently_used: bool = Field(default=True)  # only one True
+
+
+class LiveEvalJob(SQLModel, table=True):
+    """
+    Tracks progress for a user-triggered live evaluation run.
+
+    Keyed on a (model, dataset) pair: runs the model over the dataset's reviewed,
+    held-out records (records NOT used to train the model that carry gold
+    SourceTerm annotations) and scores the model's predictions against those gold
+    terms. Mirrors ExtractionJob's lifecycle (pending|running|completed|failed|
+    cancelled) with a per-record progress bar (``completed``/``total``).
+
+    The computed precision/recall/F1 metrics are stored on ``metrics`` — isolated
+    here so live eval never touches the shared ``Evaluation`` table read by the
+    base-vs-trained per-label chart. Predictions are written to ``SourceTermEx``
+    (never ``SourceTerm``).
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    dataset_id: int = Field(
+        foreign_key="dataset.id", ondelete="CASCADE", nullable=False, index=True
+    )
+    model_id: int = Field(
+        foreign_key="model.id", ondelete="CASCADE", nullable=False, index=True
+    )
+    total: int = Field(default=0)
+    completed: int = Field(default=0)
+    status: str = Field(
+        default="pending", index=True
+    )  # pending|running|completed|failed|cancelled
+    error_message: Optional[str] = Field(default=None)
+
+    # Computed metrics: per-label exact/relaxed/overlap P/R/F1 + macro aggregate,
+    # held-out count, and a message for the empty-set case. Null until computed.
+    metrics: Optional[dict] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    currently_used: bool = Field(default=True)  # only one True
 
 
 class Vocabulary(SQLModel, table=True):

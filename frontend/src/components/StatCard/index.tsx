@@ -4,11 +4,13 @@ import styles from "./styles.module.css";
 interface StatCardProps {
   label: string;
   value: string | number;
+  /** Optional muted secondary line rendered under the label (e.g. "of 120 in dataset"). */
+  subtext?: string;
   color?: "default" | "blue" | "green" | "orange";
   className?: string;
 }
 
-const StatCard: React.FC<StatCardProps> = ({ label, value, color = "default", className }) => {
+const StatCard: React.FC<StatCardProps> = ({ label, value, subtext, color = "default", className }) => {
   return (
     <div className={classNames(styles["stat-card"], className)}>
       <div
@@ -20,7 +22,10 @@ const StatCard: React.FC<StatCardProps> = ({ label, value, color = "default", cl
       >
         {typeof value === "number" ? value.toLocaleString() : value}
       </div>
-      <div className={styles["stat-card__label"]}>{label}</div>
+      <div className={styles["stat-card__meta"]}>
+        <div className={styles["stat-card__label"]}>{label}</div>
+        {subtext && <div className={styles["stat-card__subtext"]}>{subtext}</div>}
+      </div>
     </div>
   );
 };

@@ -8,7 +8,7 @@
 .loading-spinner__spinner {
   border-radius: 50%;
   border-style: solid;
-  border-color: var(--color-primary, #3b82f6) transparent transparent transparent;
+  border-color: var(--color-primary, var(--color-info)) transparent transparent transparent;
   animation: spin 1s linear infinite;
 }
 
@@ -31,7 +31,7 @@
 }
 
 .loading-spinner__text {
-  color: var(--color-text-secondary, #6b7280);
+  color: var(--color-text-secondary, var(--color-text-muted));
   font-size: 0.875rem;
 }
 

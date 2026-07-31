@@ -1,5 +1,9 @@
-services:
+# Pin the project name so the named volumes (e.g. app-db-data) keep a stable,
+# directory-independent name. Without this, launching from a renamed/cloned/
+# differently-cased path creates fresh empty volumes -> the DB appears wiped.
+name: prepare-extraction-tool
 
+services:
   postgres:
     image: postgres:18
     container_name: PREPARE-POSTGRESQL
@@ -60,11 +64,12 @@ services:
       timeout: 10s
 
   backend:
-    image: '${DOCKER_IMAGE_BACKEND?Variable not set}:${TAG-latest}'
+    image: "${DOCKER_IMAGE_BACKEND?Variable not set}:${TAG-latest}"
     container_name: PREPARE-BACKEND
     restart: unless-stopped
-    expose:
-      - "8000"
+    ports:
+      # Loopback-only publish so a host-run Vite dev server (npm run dev) can proxy /api
+      - "127.0.0.1:8000:8000"
     networks:
       - prepare-public
       - default
@@ -77,10 +82,9 @@ services:
         condition: service_healthy
     env_file:
       - .env
-    volumes:
-      - ./backend/model:/root/.cache/huggingface
     environment:
-      - EXTRACT_HOST=${EXTRACT_HOST:-http://bioner:${BIONER_PORT:-5600}}
+      # Bioner reachable by compose service name inside the network (overrides .env localhost)
+      - EXTRACT_HOST=http://bioner:${BIONER_PORT:-5600}
       - ENVIRONMENT=${ENVIRONMENT}
       - BACKEND_CORS_ORIGINS=${BACKEND_CORS_ORIGINS}
       - SECRET_KEY=${SECRET_KEY?Variable not set}
@@ -91,6 +95,10 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD?Variable not set}
       - DATABASE_URL=postgresql://${POSTGRES_USER?Variable not set}:${POSTGRES_PASSWORD?Variable not set}@postgres:5432/${POSTGRES_DB?Variable not set}
       - ELASTICSEARCH_URL=http://elasticsearch:9200
+      # Persistent HuggingFace cache (shared with bioner) for embedding model downloads
+      - HF_HOME=/.cache
+    volumes:
+      - ./.cache:/.cache
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health/check"]
       interval: 10s
@@ -101,7 +109,7 @@ services:
       context: ./backend
 
   frontend:
-    image: '${DOCKER_IMAGE_FRONTEND?Variable not set}:${TAG-latest}'
+    image: "${DOCKER_IMAGE_FRONTEND?Variable not set}:${TAG-latest}"
     container_name: PREPARE-FRONTEND
     restart: unless-stopped
     ports:
@@ -126,6 +134,11 @@ services:
     image: "${DOCKER_IMAGE_BIONER:-bioner}:${TAG:-latest}"
     container_name: PREPARE-BIONER
     restart: unless-stopped
+    # Contain a runaway training: OOM-kill it inside this container instead of
+    # starving the whole Docker VM. memswap_limit == mem_limit disables swap
+    # so a cap hit kills fast instead of thrashing the engine.
+    mem_limit: ${BIONER_MEM_LIMIT:-12g}
+    memswap_limit: ${BIONER_MEM_LIMIT:-12g}
     expose:
       - "${BIONER_PORT:-5600}"
     # deploy:
@@ -138,8 +151,10 @@ services:
     env_file:
       - .env
     volumes:
-      - ./bioner/models:/models:ro
-      - ./bioner/model:/model:ro
+      # Model library: trained models (written here per run) + hand-placed local models
+      - ./bioner/models:/models
+      # Shared, persistent HuggingFace cache (downloaded models persist across restarts)
+      - ./.cache:/.cache
     environment:
       - ENGINE=${BIONER_ENGINE?Variable not set}
       - MODEL=${BIONER_MODEL?Variable not set}
@@ -149,8 +164,24 @@ services:
       - USE_GPU=${BIONER_USE_GPU}
       - ADAPTER_PATH=${BIONER_ADAPTER_PATH}
       - PROMPTS_PATH=${BIONER_PROMPTS_PATH}
+      # Where trained models are saved (inside the /models library volume)
+      - BIONER_MODELS_DIR=/models
+      # Persistent HuggingFace cache location
+      - HF_HOME=/.cache
+      # Backend reachable by compose service name inside the network (overrides .env localhost)
+      - BACKEND_HOST=http://backend:8000
+      # GLiNER fine-tuning window budget (read by app/core/settings.py)
+      - BIONER_TRAIN_MAX_TOKENS=${BIONER_TRAIN_MAX_TOKENS:-256}
+      - BIONER_TRAIN_CONTEXT_PAD=${BIONER_TRAIN_CONTEXT_PAD:-64}
+      - BIONER_TRAIN_MICRO_BATCH=${BIONER_TRAIN_MICRO_BATCH:-2}
+      # Eval-loss interval in optimizer steps (0 = auto ~18 points; 1 = every step)
+      - BIONER_TRAIN_EVAL_STEPS=${BIONER_TRAIN_EVAL_STEPS:-0}
+      # Memory-guard tuning: pre-flight overhead estimate + mid-run abort floor
+      - BIONER_TRAIN_OVERHEAD_MB=${BIONER_TRAIN_OVERHEAD_MB:-1024}
+      - BIONER_TRAIN_MIN_FREE_MB=${BIONER_TRAIN_MIN_FREE_MB:-512}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${BIONER_PORT:-5600}/health"]
+      test:
+        ["CMD", "curl", "-f", "http://localhost:${BIONER_PORT:-5600}/health"]
       interval: 15s
       timeout: 10s
       retries: 5

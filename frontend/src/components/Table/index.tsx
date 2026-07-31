@@ -101,9 +101,9 @@ function Table<T>({
           })}
         >
           <tr>
-            {columns.map((column) => (
+            {columns.map((column, columnIndex) => (
               <th
-                key={String(column.key)}
+                key={`${columnIndex}-${String(column.key)}`}
                 style={{
                   width: column.width,
                   textAlign: column.align,
@@ -152,8 +152,8 @@ function Table<T>({
                 })}
                 tabIndex={onRowClick ? 0 : undefined}
               >
-                {columns.map((column) => (
-                  <td key={String(column.key)} style={{ textAlign: column.align }}>
+                {columns.map((column, columnIndex) => (
+                  <td key={`${columnIndex}-${String(column.key)}`} style={{ textAlign: column.align }}>
                     {getCellValue(item, column)}
                   </td>
                 ))}

@@ -48,7 +48,7 @@ export async function createVocabulary(
         try {
           const response = JSON.parse(xhr.responseText);
           resolve(response);
-        } catch (err) {
+        } catch {
           reject(new Error("Failed to parse response"));
         }
       } else {
@@ -108,7 +108,7 @@ export async function downloadVocabulary(id: number): Promise<void> {
 
   // Get filename from Content-Disposition header or use default
   const contentDisposition = response.headers.get("Content-Disposition");
-  const filenameMatch = contentDisposition?.match(/filename=(.+)/);
+  const filenameMatch = contentDisposition?.match(/filename="?([^"]+)"?/);
   const filename = filenameMatch ? filenameMatch[1] : `vocabulary_${id}.csv`;
 
   // Create blob and trigger download
@@ -120,7 +120,7 @@ export async function downloadVocabulary(id: number): Promise<void> {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  window.URL.revokeObjectURL(url);
+  setTimeout(() => window.URL.revokeObjectURL(url), 0);
 }
 
 export async function getVocabularyConcepts(vocabularyId: number, page = 1, limit = 50): Promise<ConceptsOutput> {

@@ -1,0 +1,362 @@
+/* ------------------ LAYOUT ------------------ */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* ------------------ STATS ------------------ */
+
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+/* ------------------ REVIEW CALLOUT ------------------ */
+
+.reviewCallout {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.reviewCallout--warn {
+  border-color: var(--color-warning, var(--color-warning));
+  background: color-mix(in srgb, var(--color-warning, var(--color-warning)) 10%, transparent);
+}
+
+.reviewCallout--ok {
+  border-color: var(--color-success, var(--color-success));
+  background: color-mix(in srgb, var(--color-success, var(--color-success)) 8%, transparent);
+}
+
+/* ------------------ TRAINING FORM ------------------ */
+
+.field {
+  margin-bottom: var(--space-3);
+}
+
+/* Training + evaluation dataset pickers sit side by side. */
+.dataGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+/* The pickers' hints have unequal length, so drop the bottom margin the
+   trailing field would otherwise add below the card content. */
+.dataGrid .field {
+  margin-bottom: 0;
+}
+
+@media (max-width: 900px) {
+  .dataGrid {
+    grid-template-columns: 1fr;
+    gap: var(--space-3);
+  }
+}
+
+.field__label {
+  display: block;
+  margin: 0 0 var(--space-1);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.radio {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  cursor: pointer;
+  color: var(--color-text);
+}
+
+.code {
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+}
+
+.input {
+  width: 100%;
+  max-width: 480px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  font-size: 14px;
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(20, 77, 112, 0.15);
+}
+
+.hint {
+  margin: var(--space-1) 0 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+/* ------------------ ADVANCED / HYPERPARAMETERS ------------------ */
+
+.advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0;
+  border: none;
+  background: none;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--color-primary);
+}
+
+.hyperparams {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--space-2) var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.hyperparam {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* Sub-labels of an already-labelled section — deliberately quieter than
+   `.field__label` so the hyperparameters read as one group, not as peers of
+   the top-level fields. Matches `.modelInfo__term`. */
+.hyperparam__label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.hyperparam .input {
+  max-width: 100%;
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: var(--space-3);
+}
+
+/* Config left, run panel (split + advanced + actions) right. */
+.configGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
+  gap: var(--space-4);
+}
+
+.configGrid__main {
+  min-width: 0;
+}
+
+.runPanel {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-alt);
+}
+
+/* Actions anchor the panel bottom, separated from the config controls. */
+.runPanel .actions {
+  margin-top: auto;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+@media (max-width: 900px) {
+  .configGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ------------------ PHASE STEPPER ------------------ */
+
+.stepper {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.step:not(:last-child)::after {
+  content: "▸";
+  margin-left: var(--space-1);
+  color: var(--color-text-muted);
+}
+
+.step__marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.step--active {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.step--active .step__marker {
+  position: relative;
+  border-color: color-mix(in srgb, var(--color-primary) 30%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  color: var(--color-primary);
+}
+
+/* Rotating arc over the dimmed border marks the active step as running. */
+.step--active .step__marker::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--color-primary);
+  animation: step-marker-spin 1s linear infinite;
+}
+
+@keyframes step-marker-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .step--active .step__marker::before {
+    display: none;
+  }
+
+  .step--active .step__marker {
+    border-color: var(--color-primary);
+    background: var(--color-primary);
+    color: var(--color-surface);
+  }
+}
+
+.step--done {
+  color: var(--color-success);
+}
+
+.step--done .step__marker {
+  border-color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+  color: var(--color-success);
+}
+
+.phaseCaption {
+  margin: 0 0 var(--space-2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+/* ------------------ PROGRESS ------------------ */
+
+.progress {
+  margin-bottom: var(--space-3);
+}
+
+.progressLabel {
+  margin: var(--space-1) 0 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+/* ------------------ BASE MODEL INFO ------------------ */
+
+.modelInfo {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-alt);
+  max-width: 480px;
+}
+
+.modelInfo__desc {
+  margin: 0 0 var(--space-2);
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.modelInfo__specs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+}
+
+.modelInfo__spec {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.modelInfo__term {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.modelInfo__value {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+/* ------------------ WARNING ------------------ */
+
+.warning {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-warning, var(--color-warning));
+  background: color-mix(in srgb, var(--color-warning, var(--color-warning)) 10%, transparent);
+  color: var(--color-text);
+  font-size: 13px;
+}

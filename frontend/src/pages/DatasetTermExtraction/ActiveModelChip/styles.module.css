@@ -1,0 +1,22 @@
+/* Active-model caption — sits directly under the Auto-Detect button so the
+   model it describes is co-located with the action that uses it. */
+.caption {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.caption__name {
+  font-weight: 700;
+  color: var(--color-primary-dark);
+}
+
+.caption__link {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-info);
+}
+
+.caption__link:hover {
+  color: var(--color-info-hover);
+}

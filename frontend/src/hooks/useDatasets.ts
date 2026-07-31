@@ -9,7 +9,7 @@ import { getDatasets, createDataset, deleteDataset, downloadDataset as downloadD
 const POLL_INTERVAL_MS = 3000;
 
 function hasActiveProcessing(items: Dataset[]): boolean {
-  return items.some((d) => d.status === "PENDING" || d.status === "PROCESSING" || d.status === "DELETED");
+  return items.some((d) => d.status === "PENDING" || d.status === "PROCESSING");
 }
 
 export function useDatasets() {

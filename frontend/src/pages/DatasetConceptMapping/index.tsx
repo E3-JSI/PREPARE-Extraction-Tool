@@ -5,10 +5,12 @@ import Layout from "@components/Layout";
 import Button from "@components/Button";
 import StatCard from "@components/StatCard";
 import ConfirmDialog from "@components/ConfirmDialog";
+import ProgressBar from "@components/ProgressBar";
 import { ToastContainer } from "@components/Toast/ToastContainer";
 import WorkflowPageHeader from "@components/WorkflowPageHeader";
 import { usePageTitle } from "@hooks/usePageTitle";
 import { useToast } from "@hooks/useToast";
+import { useAutoMapJob, type AutoMapJobProgress } from "@hooks/useAutoMapJob";
 import * as api from "@/api";
 
 import SourceTermsTable from "./SourceTermsTable";
@@ -60,6 +62,10 @@ export default function DatasetConceptMapping() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const hasLoadedOnce = useRef(false);
+  // Monotonic id to discard out-of-order/stale search responses, plus a mounted
+  // flag so late responses never setState after unmount.
+  const searchRequestId = useRef(0);
+  const isMountedRef = useRef(true);
   const [isSearching, setIsSearching] = useState(false);
   const [isMapping, setIsMapping] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +80,14 @@ export default function DatasetConceptMapping() {
   }>({ isOpen: false, title: "", message: "", onConfirm: () => {} });
 
   usePageTitle(datasetName ? `Concept Mapping - ${datasetName}` : "Concept Mapping");
+
+  // Track mount status so async searches can't setState after unmount.
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   // Fetch dataset info
   useEffect(() => {
@@ -151,10 +165,12 @@ export default function DatasetConceptMapping() {
     }
   }, [datasetId, selectedLabel, labelsLoaded]);
 
-  // Sync comment field when selecting a different mapping
+  // Sync comment field when the selected mapping changes. Depend on the comment
+  // too: after mapping/approving, selectedMapping is replaced with the same
+  // cluster_id but an updated comment, which would otherwise leave a stale input.
   useEffect(() => {
     setComment(selectedMapping?.comment ?? "");
-  }, [selectedMapping?.cluster_id]);
+  }, [selectedMapping?.cluster_id, selectedMapping?.comment]);
 
   // Reset view when label changes
   useEffect(() => {
@@ -178,6 +194,10 @@ export default function DatasetConceptMapping() {
     const vocabIdsToUse = vocabularyFilterEnabled ? selectedVocabularies : vocabularies.map((v) => v.id);
     if (vocabIdsToUse.length === 0) return;
 
+    // Only the latest in-flight search may apply its result.
+    const requestId = ++searchRequestId.current;
+    const isStale = () => !isMountedRef.current || requestId !== searchRequestId.current;
+
     try {
       setIsSearching(true);
       const request: AutoMapRequest = {
@@ -190,11 +210,13 @@ export default function DatasetConceptMapping() {
       };
 
       const results = await api.autoMapCluster(parseInt(datasetId), selectedMapping.cluster_id, request);
+      if (isStale()) return;
       setSearchResults(results.results);
     } catch (err) {
+      if (isStale()) return;
       setError(err instanceof Error ? err.message : "Search failed");
     } finally {
-      setIsSearching(false);
+      if (!isStale()) setIsSearching(false);
     }
   }, [
     selectedMapping,
@@ -222,6 +244,10 @@ export default function DatasetConceptMapping() {
       const limit = 10;
       const offset = (page - 1) * limit;
 
+      // Only the latest in-flight search may apply its result.
+      const requestId = ++searchRequestId.current;
+      const isStale = () => !isMountedRef.current || requestId !== searchRequestId.current;
+
       try {
         setIsSearching(true);
         const results = await api.searchConcepts({
@@ -237,13 +263,15 @@ export default function DatasetConceptMapping() {
           sort_order: sortOrder,
         });
 
+        if (isStale()) return;
         setSearchResults(results.results);
         setSearchPagination(results.pagination || null);
         setSearchPage(page);
       } catch (err) {
+        if (isStale()) return;
         setError(err instanceof Error ? err.message : "Search failed");
       } finally {
-        setIsSearching(false);
+        if (!isStale()) setIsSearching(false);
       }
     },
     [
@@ -261,21 +289,24 @@ export default function DatasetConceptMapping() {
     ]
   );
 
-  // Auto-search when cluster is selected
-  useEffect(() => {
-    if (selectedMapping) {
-      handleAutoSearch();
-    }
-  }, [selectedMapping?.cluster_id, handleAutoSearch]);
-
-  // Re-search when any filter or query mode changes
+  // Single search-trigger effect: runs on cluster selection and whenever a
+  // filter / query mode changes. Previously a second effect also fired
+  // handleAutoSearch on selection, double-firing the request; consolidated here.
   useEffect(() => {
     if (!selectedMapping) return;
     if (useSourceTerm) {
       handleAutoSearch();
-    } else if (searchQuery) {
-      handleManualSearch(1);
+      return;
     }
+    if (!searchQuery) return;
+
+    // Debounce the custom-query search so typing doesn't fire a request per
+    // keystroke. Request-sequencing inside handleManualSearch still discards
+    // any out-of-order/stale responses.
+    const timer = setTimeout(() => {
+      handleManualSearch(1);
+    }, 300);
+    return () => clearTimeout(timer);
   }, [selectedMapping, useSourceTerm, handleAutoSearch, handleManualSearch, searchQuery]);
 
   // Handle search (triggered by Enter key or search button)
@@ -404,6 +435,28 @@ export default function DatasetConceptMapping() {
     });
   };
 
+  // Auto-map-all runs as a polled backend job. Completion (explicit run or a
+  // resumed job) toasts the final counts and refreshes the mappings.
+  const handleAutoMapComplete = useCallback(
+    (p: AutoMapJobProgress) => {
+      if (p.status === "cancelled") {
+        toast.info(`Auto-mapping cancelled. Mapped: ${p.mapped_count}, Failed: ${p.failed_count}`);
+      } else {
+        toast.success(`Auto-mapping complete! Mapped: ${p.mapped_count}, Failed: ${p.failed_count}`);
+      }
+      fetchMappings();
+    },
+    [toast, fetchMappings]
+  );
+
+  const {
+    isRunning: isAutoMapping,
+    isCancelling: isCancellingAutoMap,
+    progress: autoMapProgress,
+    startAutoMap,
+    cancelAutoMap,
+  } = useAutoMapJob(datasetId ? parseInt(datasetId) : 0, handleAutoMapComplete);
+
   // Handle auto-map all
   const handleAutoMapAll = () => {
     // Use all vocabularies if filter is disabled, otherwise use selected
@@ -420,23 +473,25 @@ export default function DatasetConceptMapping() {
       onConfirm: async () => {
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
         try {
-          setIsLoading(true);
-          const response = await api.autoMapAllClusters(parseInt(datasetId), {
+          await startAutoMap({
             vocabulary_ids: vocabIdsToUse,
             label: selectedLabel || undefined,
             use_cluster_terms: true,
             search_type: "vector",
           });
-
-          toast.success(`Auto-mapping complete! Mapped: ${response.mapped_count}, Failed: ${response.failed_count}`);
-          await fetchMappings();
         } catch (err) {
           toast.error(err instanceof Error ? err.message : "Auto-mapping failed");
-        } finally {
-          setIsLoading(false);
         }
       },
     });
+  };
+
+  const handleCancelAutoMap = async () => {
+    try {
+      await cancelAutoMap();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to cancel auto-mapping");
+    }
   };
 
   // Handle export
@@ -512,20 +567,46 @@ export default function DatasetConceptMapping() {
           </div>
 
           <div className={styles["page__toolbar-buttons"]}>
-            <Button variant="success" onClick={handleAutoMapAll} disabled={isLoading || vocabularies.length === 0}>
-              Auto-Map All Terms
-            </Button>
+            {isAutoMapping ? (
+              <div className={styles["page__auto-map"]}>
+                <span className={styles["page__auto-map-label"]}>Auto-mapping in progress</span>
+                {autoMapProgress && autoMapProgress.total > 0 && (
+                  <span className={styles["page__auto-map-count"]}>
+                    {autoMapProgress.completed} / {autoMapProgress.total} clusters
+                  </span>
+                )}
+                <div className={styles["page__auto-map-progress"]}>
+                  <ProgressBar
+                    progress={
+                      autoMapProgress && autoMapProgress.total > 0
+                        ? (autoMapProgress.completed / autoMapProgress.total) * 100
+                        : 0
+                    }
+                    showPercentage
+                  />
+                </div>
+                <Button variant="outline" size="small" onClick={handleCancelAutoMap} disabled={isCancellingAutoMap}>
+                  {isCancellingAutoMap ? "Cancelling…" : "Cancel"}
+                </Button>
+              </div>
+            ) : (
+              <>
+                <Button variant="success" onClick={handleAutoMapAll} disabled={isLoading || vocabularies.length === 0}>
+                  Auto-Map All Terms
+                </Button>
 
-            <Button variant="primary" onClick={handleExport}>
-              Download Mappings
-            </Button>
+                <Button variant="primary" onClick={handleExport}>
+                  Download Mappings
+                </Button>
+              </>
+            )}
           </div>
         </div>
 
         {error && (
           <div className={styles["page__error"]}>
             {error}
-            <Button variant="ghost" size="icon" onClick={() => setError(null)}>
+            <Button variant="ghost" size="icon" onClick={() => setError(null)} aria-label="Dismiss error">
               ×
             </Button>
           </div>

@@ -1,4 +1,12 @@
-import type { ClustersOutput, ClusterData, ClusterCreateRequest, ClusterMergeRequest, MessageOutput } from "types";
+import type {
+  ClustersOutput,
+  ClusterData,
+  ClusterCreateRequest,
+  ClusterMergeRequest,
+  ClusterJobStartResponse,
+  ClusterJobStatusResponse,
+  MessageOutput,
+} from "types";
 
 import { apiRequest, getToken, API_BASE_URL } from "./client";
 
@@ -11,6 +19,29 @@ export async function rebuildClusters(datasetId: number, label: string): Promise
   return apiRequest<MessageOutput>(`/datasets/${datasetId}/clusters/create?label=${encodeURIComponent(label)}`, {
     method: "POST",
   });
+}
+
+export async function startClusterAll(datasetId: number): Promise<ClusterJobStartResponse> {
+  return apiRequest<ClusterJobStartResponse>(`/datasets/${datasetId}/clusters/cluster-all`, {
+    method: "POST",
+  });
+}
+
+export async function getClusterAllStatus(datasetId: number, jobId: string): Promise<ClusterJobStatusResponse> {
+  return apiRequest<ClusterJobStatusResponse>(`/datasets/${datasetId}/clusters/cluster-all/${jobId}/status`);
+}
+
+export async function getActiveClusterJob(datasetId: number): Promise<ClusterJobStatusResponse | null> {
+  const result = await apiRequest<ClusterJobStatusResponse | null>(
+    `/datasets/${datasetId}/clusters/cluster-all/active`
+  );
+  // apiRequest returns {} for an empty 200 body, so normalize the "no active job"
+  // case (null, undefined, or an empty/jobless object) to null.
+  return result?.job_id ? result : null;
+}
+
+export async function cancelClusterJob(datasetId: number, jobId: string): Promise<MessageOutput> {
+  return apiRequest<MessageOutput>(`/datasets/${datasetId}/clusters/cluster-all/${jobId}/cancel`, { method: "POST" });
 }
 
 export async function createCluster(datasetId: number, data: ClusterCreateRequest): Promise<ClusterData> {
@@ -48,15 +79,10 @@ export async function deleteCluster(clusterId: number): Promise<MessageOutput> {
 }
 
 export async function updateClusterLabel(clusterId: number, label: string, color?: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/clusters/${clusterId}/label`, {
+  return apiRequest<void>(`/clusters/${clusterId}/label`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ label, color }),
   });
-
-  if (!response.ok) {
-    throw new Error("Failed to update cluster label");
-  }
 }
 
 export async function reviewLabel(datasetId: number, label: string): Promise<MessageOutput> {
@@ -100,5 +126,5 @@ export async function downloadClusters(datasetId: number, label?: string): Promi
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  window.URL.revokeObjectURL(url);
+  setTimeout(() => window.URL.revokeObjectURL(url), 0);
 }

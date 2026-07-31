@@ -7,7 +7,7 @@
   min-height: 42px;
   padding: 6px 10px;
   font-size: 14px;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--color-gray-300);
   border-radius: 4px;
   transition:
     border-color 0.2s ease,
@@ -18,12 +18,12 @@
 }
 
 .tag-input--focused {
-  border-color: #11415e;
+  border-color: var(--color-primary-dark);
   box-shadow: 0 0 0 3px rgba(30, 58, 95, 0.1);
 }
 
 .tag-input--disabled {
-  background-color: #f9fafb;
+  background-color: var(--color-surface-alt);
   cursor: not-allowed;
 }
 
@@ -34,8 +34,8 @@
   padding: 2px 8px;
   font-size: 13px;
   font-weight: 500;
-  color: #144d70;
-  background-color: #e8f4f8;
+  color: var(--color-primary);
+  background-color: var(--color-info-tint);
   border-radius: 4px;
   line-height: 1.5;
   white-space: nowrap;
@@ -50,7 +50,7 @@
   padding: 0;
   border: none;
   background: none;
-  color: #144d70;
+  color: var(--color-primary);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
@@ -80,7 +80,7 @@
 }
 
 .tag-input__input::placeholder {
-  color: #9ca3af;
+  color: var(--color-gray-400);
 }
 
 .tag-input__input:disabled {

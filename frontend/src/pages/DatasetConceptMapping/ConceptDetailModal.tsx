@@ -24,19 +24,27 @@ export default function ConceptDetailModal({ conceptId, onClose, onMap }: Concep
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
+    let ignore = false;
+
     const fetchHierarchy = async () => {
       try {
         setIsLoading(true);
         const data = await api.getConceptHierarchy(conceptId);
+        if (ignore) return;
         setHierarchy(data);
       } catch (err) {
+        if (ignore) return;
         setError(err instanceof Error ? err.message : "Failed to load concept details");
       } finally {
-        setIsLoading(false);
+        if (!ignore) setIsLoading(false);
       }
     };
 
     fetchHierarchy();
+
+    return () => {
+      ignore = true;
+    };
   }, [conceptId]);
 
   // Store previous active element and focus close button when opening
@@ -64,6 +72,8 @@ export default function ConceptDetailModal({ conceptId, onClose, onMap }: Concep
         const focusableElements = modalRef.current.querySelectorAll<HTMLElement>(
           'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
         );
+        if (focusableElements.length === 0) return;
+
         const firstElement = focusableElements[0];
         const lastElement = focusableElements[focusableElements.length - 1];
 

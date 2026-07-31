@@ -11,12 +11,12 @@
 }
 
 .processing-badge--active {
-  color: #1d4ed8;
-  background-color: #dbeafe;
+  color: var(--color-info-hover);
+  background-color: var(--color-info-tint);
 }
 
 .processing-badge--failed {
-  color: #dc2626;
-  background-color: #fef2f2;
+  color: var(--color-error);
+  background-color: var(--color-error-tint);
   cursor: help;
 }

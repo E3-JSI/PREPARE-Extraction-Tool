@@ -175,8 +175,12 @@ const AnnotatableText: React.FC<AnnotatableTextProps> = ({
       return;
     }
 
-    // Adjust offsets for trimmed text
-    const trimmedStart = startOffset + text.slice(startOffset, endOffset).indexOf(selectedText);
+    // Adjust offsets for trimmed text. Count the leading whitespace skipped by
+    // trim() rather than searching for the trimmed value, since indexOf would
+    // pick an earlier occurrence when the selection repeats the same token.
+    const rawSlice = text.slice(startOffset, endOffset);
+    const leadingWhitespace = rawSlice.length - rawSlice.trimStart().length;
+    const trimmedStart = startOffset + leadingWhitespace;
     const trimmedEnd = trimmedStart + selectedText.length;
 
     // Check for overlaps with existing annotations
@@ -221,16 +225,14 @@ const AnnotatableText: React.FC<AnnotatableTextProps> = ({
   }, [linkMode, selectedAnnotation, onSelectAnnotation]);
 
   // Pre-compute from-term once per render for link mode
-  const linkFromTerm = linkMode && linkFromId != null
-    ? annotations.find((a) => a.id === linkFromId) ?? null
-    : null;
+  const linkFromTerm = linkMode && linkFromId != null ? (annotations.find((a) => a.id === linkFromId) ?? null) : null;
 
   return (
     <div
       ref={containerRef}
-      className={classNames(styles['annotatable-text'], {
-        [styles['annotatable-text--annotating']]: isAnnotating && !linkMode,
-        [styles['annotatable-text--link-mode']]: linkMode,
+      className={classNames(styles["annotatable-text"], {
+        [styles["annotatable-text--annotating"]]: isAnnotating && !linkMode,
+        [styles["annotatable-text--link-mode"]]: linkMode,
       })}
       onMouseUp={handleMouseUp}
       onClick={handleContainerClick}
@@ -242,18 +244,19 @@ const AnnotatableText: React.FC<AnnotatableTextProps> = ({
           (() => {
             const term = segment.term;
             const isLinkFrom = linkMode && term.id === linkFromId;
-            const compatibleWithFrom = linkFromTerm && getCompatibleLabels
-              ? getCompatibleLabels(linkFromTerm.label).includes(term.label)
-              : false;
+            const compatibleWithFrom =
+              linkFromTerm && getCompatibleLabels
+                ? getCompatibleLabels(linkFromTerm.label).includes(term.label)
+                : false;
             const termIsRelation = isRelationLabel ? isRelationLabel(term.label) : false;
-            const isLinkable = linkMode && !isLinkFrom && (
-              linkFromId === null ? termIsRelation : compatibleWithFrom
-            );
-            const isNotLinkable = linkMode && !isLinkFrom && (
-              linkFromId === null ? !termIsRelation : !compatibleWithFrom
-            );
-            const alreadyLinked = linkMode && linkFromId !== null && compatibleWithFrom
-              && !!term.links?.find(
+            const isLinkable = linkMode && !isLinkFrom && (linkFromId === null ? termIsRelation : compatibleWithFrom);
+            const isNotLinkable =
+              linkMode && !isLinkFrom && (linkFromId === null ? !termIsRelation : !compatibleWithFrom);
+            const alreadyLinked =
+              linkMode &&
+              linkFromId !== null &&
+              compatibleWithFrom &&
+              !!term.links?.find(
                 (l: SourceTermLink) =>
                   (l.from_term_id === linkFromId && l.to_term_id === term.id) ||
                   (l.to_term_id === linkFromId && l.from_term_id === term.id)
@@ -263,21 +266,21 @@ const AnnotatableText: React.FC<AnnotatableTextProps> = ({
               <span
                 key={idx}
                 data-term-id={term.id}
-                className={classNames(
-                  styles['highlighted-term'],
-                  styles[getLabelColorClass(term.label, labels)],
-                  {
-                    [styles['highlighted-term--selected-annotation']]: !linkMode && selectedAnnotation === term.id,
-                    [styles['highlighted-term--link-from']]: isLinkFrom,
-                    [styles['highlighted-term--linkable']]: isLinkable && !alreadyLinked,
-                    [styles['highlighted-term--already-linked']]: alreadyLinked,
-                    [styles['highlighted-term--not-linkable']]: isNotLinkable,
-                    [styles['highlighted-term--arc-hover']]: !linkMode && hoveredConnectedIds.has(term.id),
-                  }
-                )}
+                className={classNames(styles["highlighted-term"], styles[getLabelColorClass(term.label, labels)], {
+                  [styles["highlighted-term--selected-annotation"]]: !linkMode && selectedAnnotation === term.id,
+                  [styles["highlighted-term--link-from"]]: isLinkFrom,
+                  [styles["highlighted-term--linkable"]]: isLinkable && !alreadyLinked,
+                  [styles["highlighted-term--already-linked"]]: alreadyLinked,
+                  [styles["highlighted-term--not-linkable"]]: isNotLinkable,
+                  [styles["highlighted-term--arc-hover"]]: !linkMode && hoveredConnectedIds.has(term.id),
+                })}
                 title={`${term.label}: ${term.value}`}
-                onMouseEnter={() => { if (!linkMode) setHoveredTermId(term.id); }}
-                onMouseLeave={() => { if (!linkMode) setHoveredTermId(null); }}
+                onMouseEnter={() => {
+                  if (!linkMode) setHoveredTermId(term.id);
+                }}
+                onMouseLeave={() => {
+                  if (!linkMode) setHoveredTermId(null);
+                }}
                 onClick={(e) => {
                   if (linkMode && onSpanLinkClick && !isNotLinkable) {
                     e.stopPropagation();
@@ -289,7 +292,9 @@ const AnnotatableText: React.FC<AnnotatableTextProps> = ({
               >
                 {segment.content}
                 {term.links && term.links.length > 0 && (
-                  <span className={styles['highlighted-term__link-badge']} aria-hidden="true">🔗</span>
+                  <span className={styles["highlighted-term__link-badge"]} aria-hidden="true">
+                    🔗
+                  </span>
                 )}
               </span>
             );
@@ -297,7 +302,7 @@ const AnnotatableText: React.FC<AnnotatableTextProps> = ({
         )
       )}
       {!linkMode && isAnnotating && !selectedLabel && (
-        <div className={styles['annotatable-text__hint']}>Select a label from the sidebar to start annotating</div>
+        <div className={styles["annotatable-text__hint"]}>Select a label from the sidebar to start annotating</div>
       )}
       <LinkArrowOverlay
         containerRef={containerRef}

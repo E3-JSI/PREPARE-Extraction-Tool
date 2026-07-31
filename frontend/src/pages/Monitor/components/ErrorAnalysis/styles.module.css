@@ -1,0 +1,125 @@
+/* ------------------ ERROR ANALYSIS DRILL-DOWN ------------------ */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.row {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 6px);
+  overflow: hidden;
+}
+
+/* Clickable label header with metric summary. */
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-muted, transparent);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--color-text);
+}
+
+.header:disabled {
+  cursor: default;
+}
+
+.header:not(:disabled):hover {
+  background: var(--color-surface-accent, rgba(37, 99, 235, 0.06));
+}
+
+.chevron {
+  width: 1rem;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.label {
+  font-weight: 600;
+  flex: 1;
+}
+
+.stats {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.fp {
+  color: var(--color-error, var(--color-error));
+  font-weight: 600;
+}
+
+.fn {
+  color: var(--color-warning, var(--color-warning-hover));
+  font-weight: 600;
+}
+
+/* Expanded example list. */
+.examples {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.example {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.badgeFn,
+.badgeFp {
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm, 6px);
+}
+
+.badgeFn {
+  background: rgba(217, 119, 6, 0.12);
+  color: var(--color-warning, var(--color-warning-hover));
+}
+
+.badgeFp {
+  background: rgba(220, 38, 38, 0.12);
+  color: var(--color-error, var(--color-error));
+}
+
+.exampleText {
+  margin: 0;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+}
+
+/* Gold (missed) span: green. Predicted (wrong) span: red. */
+.goldSpan {
+  background: rgba(22, 163, 74, 0.18);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.predSpan {
+  background: rgba(220, 38, 38, 0.18);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 2px;
+}

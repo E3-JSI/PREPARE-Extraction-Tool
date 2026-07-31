@@ -2,6 +2,19 @@
 
 The frontend for the PREPARE Extraction Tool, built with React 19, TypeScript, and Vite.
 
+<!-- docs:start -->
+## 📚 Documentation
+
+Full frontend docs live in [`docs/`](./docs/README.md):
+
+- [Architecture](./docs/ARCHITECTURE.md) — system map + diagram
+- [Setup & Run](./docs/setup-and-run.md) — install, configure, run, build, test
+- [Workflow](./docs/workflow.md) — the extract → cluster → map user flow
+- Background: [API layer](./docs/background/api-layer.md) · [State & hooks](./docs/background/state-and-hooks.md) · [Routing & auth](./docs/background/routing-and-auth.md)
+- Reference: [Components](./docs/components.md) · [Deploy](./docs/deploy.md)
+- [DESIGN.md](./DESIGN.md) — the authority for UI styling & tokens
+<!-- docs:end -->
+
 ## ☑️ Requirements
 
 - [Node.js 18+](https://nodejs.org/)

@@ -22,7 +22,7 @@
 
 .select__checkbox {
   cursor: pointer;
-  accent-color: #11415e;
+  accent-color: var(--color-primary-dark);
   width: 14px;
   height: 14px;
 }
@@ -30,7 +30,7 @@
 .select__label {
   font-size: 12px;
   font-weight: 600;
-  color: #6b7280;
+  color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -41,11 +41,11 @@
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 6px;
   font-size: 13px;
-  color: #374151;
+  color: var(--color-text);
   cursor: pointer;
   transition: all 0.2s ease;
   font-family: inherit;
@@ -53,19 +53,24 @@
 }
 
 .select__trigger:hover:not(:disabled) {
-  border-color: #d1d5db;
+  border-color: var(--color-gray-300);
 }
 
 .select__trigger:focus {
   outline: none;
-  border-color: #11415e;
+  border-color: var(--color-primary-dark);
   box-shadow: 0 0 0 2px rgba(17, 65, 94, 0.1);
+}
+
+.select__trigger:focus-visible {
+  outline: 2px solid var(--color-info);
+  outline-offset: 2px;
 }
 
 .select__trigger:disabled {
   cursor: not-allowed;
-  background: #f9fafb;
-  color: #9ca3af;
+  background: var(--color-surface-alt);
+  color: var(--color-gray-400);
 }
 
 .select__trigger-text {
@@ -77,14 +82,14 @@
 
 .select__arrow {
   font-size: 10px;
-  color: #9ca3af;
+  color: var(--color-gray-400);
   margin-left: 8px;
 }
 
 .select__menu {
   position: fixed;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 6px;
   box-shadow:
     0 4px 6px -1px rgba(0, 0, 0, 0.1),
@@ -97,7 +102,7 @@
 .select__empty {
   padding: 12px;
   text-align: center;
-  color: #9ca3af;
+  color: var(--color-gray-400);
   font-size: 13px;
   font-style: italic;
 }
@@ -110,25 +115,25 @@
   cursor: pointer;
   transition: background 0.15s ease;
   font-size: 13px;
-  color: #374151;
+  color: var(--color-text);
 }
 
 .select__option:hover {
-  background: #f9fafb;
+  background: var(--color-surface-alt);
 }
 
 .select__option--selected {
-  background: #eff6ff;
-  color: #11415e;
+  background: var(--color-info-tint);
+  color: var(--color-primary-dark);
 }
 
 .select__option--selected:hover {
-  background: #e0f2fe;
+  background: var(--color-info-tint);
 }
 
 .select__option-checkbox {
   cursor: pointer;
-  accent-color: #11415e;
+  accent-color: var(--color-primary-dark);
   width: 14px;
   height: 14px;
   flex-shrink: 0;

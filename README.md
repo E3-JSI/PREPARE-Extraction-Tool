@@ -93,6 +93,30 @@ docker-compose up -d
 ```
 Then open http://localhost:3000.
 
+## Label Linking
+
+Label linking connects two extracted terms that belong together — for example a `diagnosis` and the `medicine` prescribed for it.
+
+**Label relations** are directed "has value" pairs between label types (e.g. `diagnosis → medicine`). They are defined once, when you upload a dataset, in the dataset upload screen. Linking is only available for datasets that have at least one relation defined.
+
+**Automatic linking** happens during extraction. It is a rule-based step that runs when relations are defined: a link is created between two extracted terms only when all of the following hold:
+
+- Their labels match a defined relation, in that relation's direction (the `from` label appears before the `to` label in the text).
+- The two terms are immediately adjacent — nothing else is extracted between them.
+- Both terms fall in the same sentence.
+
+Automatic linking is **independent of the NER model**. It depends only on the labels and positions of the extracted terms, so training or selecting a custom model does **not** add, change, or enable linking — a fine-tuned model links exactly the same way the default one does.
+
+If an expected link does not appear, it is usually one of these reasons:
+
+- No label relation is defined for that pair of labels.
+- The two terms are not immediately adjacent (another term sits between them).
+- The two terms are in different sentences.
+- The terms appear in the opposite order from the relation's direction.
+- Extraction was re-run on records that were already extracted — auto-linking only runs on newly extracted terms, so re-extracting produces nothing new to link.
+
+**Manual linking** is always available once relations are defined. In the annotation panel, press `L` (or click the **Link** button), then click the two terms in the text to link or unlink them.
+
 ## Project Structure
 
 ```text

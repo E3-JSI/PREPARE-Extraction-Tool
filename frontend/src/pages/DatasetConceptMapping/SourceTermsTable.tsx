@@ -54,11 +54,13 @@ const SourceTermsTable: React.FC<SourceTermsTableProps> = ({
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
-  // Reset pagination when mappings or label changes
+  // Reset pagination when the mappings content or label changes. Keying on the
+  // `mappings` reference (not just its length) ensures we reset even when a
+  // refetch returns a same-count list, so currentPage can't point past data.
   useEffect(() => {
     setCurrentPage(1);
     setSearchQuery("");
-  }, [mappings.length, selectedLabel]);
+  }, [mappings, selectedLabel]);
 
   // Filter mappings by search query
   const filteredMappings = useMemo(() => {

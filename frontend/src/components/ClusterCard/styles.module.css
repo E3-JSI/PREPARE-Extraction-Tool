@@ -5,8 +5,8 @@
 .cluster-card {
   display: flex;
   flex-direction: column;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   overflow: hidden;
   transition: all 0.2s ease;
@@ -14,14 +14,14 @@
 }
 
 .cluster-card:hover {
-  border-color: #11415e;
+  border-color: var(--color-primary-dark);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
 .cluster-card--drag-over {
-  border-color: #11415e;
+  border-color: var(--color-primary-dark);
   border-width: 2px;
-  background: #fafcfd;
+  background: var(--color-surface-alt);
   box-shadow:
     0 0 0 4px rgba(76, 101, 175, 0.15),
     0 4px 12px rgba(76, 101, 175, 0.1);
@@ -31,13 +31,13 @@
 .cluster-card--dragging {
   opacity: 0.4;
   border-style: dashed;
-  background: #f9fafb;
+  background: var(--color-surface-alt);
 }
 
 .cluster-card--merge-target {
-  border-color: #327dae;
+  border-color: var(--color-primary);
   border-width: 2px;
-  background: #eff6ff;
+  background: var(--color-info-tint);
   box-shadow:
     0 0 0 4px rgba(37, 99, 235, 0.15),
     0 4px 12px rgba(37, 99, 235, 0.1);
@@ -45,8 +45,8 @@
 }
 
 .cluster-card--overlay {
-  background: #ffffff;
-  border: 2px solid #327dae;
+  background: var(--color-surface);
+  border: 2px solid var(--color-primary);
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
   cursor: grabbing;
   max-width: 400px;
@@ -59,20 +59,20 @@
   align-items: center;
   gap: 12px;
   padding: 12px 20px;
-  background: #f9fafb;
-  border-bottom: 1px solid #e5e7eb;
+  background: var(--color-surface-alt);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .cluster-card__drag-handle {
   cursor: grab;
-  color: #9ca3af;
+  color: var(--color-gray-400);
   font-size: 16px;
   padding: 4px;
   user-select: none;
 }
 
 .cluster-card__drag-handle:hover {
-  color: #6b7280;
+  color: var(--color-text-muted);
 }
 
 /* Name */
@@ -91,7 +91,7 @@
 .cluster-card__name-display h3 {
   font-size: 16px;
   font-weight: 600;
-  color: #11415e;
+  color: var(--color-primary-dark);
   margin: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -101,7 +101,7 @@
 .cluster-card__btn-edit-name {
   background: none;
   border: none;
-  color: #9ca3af;
+  color: var(--color-gray-400);
   cursor: pointer;
   padding: 4px 6px;
   font-size: 12px;
@@ -111,8 +111,8 @@
 }
 
 .cluster-card__btn-edit-name:hover {
-  color: #327dae;
-  background: #fafcfd;
+  color: var(--color-primary);
+  background: var(--color-surface-alt);
 }
 
 .cluster-card__name-edit {
@@ -125,9 +125,9 @@
   flex: 1;
   min-width: 150px;
   padding: 8px 12px;
-  background: #ffffff;
-  color: #374151;
-  border: 1px solid #e5e7eb;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
   border-radius: 6px;
   font-size: 14px;
   font-weight: 500;
@@ -136,12 +136,12 @@
 
 .cluster-card__title-input:focus {
   outline: none;
-  border-color: #11415e;
+  border-color: var(--color-primary-dark);
   box-shadow: 0 0 0 3px rgba(76, 101, 175, 0.1);
 }
 
 .cluster-card__btn-edit-action {
-  background: #327dae;
+  background: var(--color-primary);
   border: none;
   color: white;
   cursor: pointer;
@@ -153,17 +153,17 @@
 }
 
 .cluster-card__btn-edit-action:hover {
-  background: #11415e;
+  background: var(--color-primary-dark);
 }
 
 .cluster-card__btn-edit-cancel {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--color-gray-100);
+  color: var(--color-text-muted);
 }
 
 .cluster-card__btn-edit-cancel:hover {
-  background: #e5e7eb;
-  color: #374151;
+  background: var(--color-border);
+  color: var(--color-text);
 }
 
 /* Stats */
@@ -172,8 +172,8 @@
   display: flex;
   gap: 12px;
   font-size: 12px;
-  color: #6b7280;
-  background: #f9fafb;
+  color: var(--color-text-muted);
+  background: var(--color-surface-alt);
   padding: 8px 16px;
 }
 
@@ -196,7 +196,7 @@
 
 .cluster-card__body {
   padding: 16px 20px;
-  background: #ffffff;
+  background: var(--color-surface);
 }
 
 .cluster-card__terms-list {
@@ -216,34 +216,49 @@
   align-self: center;
 }
 
-.cluster-card__label-badge.condition {
-  background: #fee2e2;
-  color: #7f1d1d;
+.cluster-card__label-badge.label1 {
+  background: var(--label1-bg);
+  color: var(--label1-text);
 }
 
-.cluster-card__label-badge.medication {
-  background: #ede9fe;
-  color: #4c1d95;
+.cluster-card__label-badge.label2 {
+  background: var(--label2-bg);
+  color: var(--label2-text);
 }
 
-.cluster-card__label-badge.labtest {
-  background: #fed7aa;
-  color: #7c2d12;
+.cluster-card__label-badge.label3 {
+  background: var(--label3-bg);
+  color: var(--label3-text);
 }
 
-.cluster-card__label-badge.procedure {
-  background: #dbeafe;
-  color: #13425e;
+.cluster-card__label-badge.label4 {
+  background: var(--label4-bg);
+  color: var(--label4-text);
 }
 
-.cluster-card__label-badge.bodypart {
-  background: #d1fae5;
-  color: #16593f;
+.cluster-card__label-badge.label5 {
+  background: var(--label5-bg);
+  color: var(--label5-text);
 }
 
-.cluster-card__label-badge.default {
-  background: #f3f4f6;
-  color: #1e293b;
+.cluster-card__label-badge.label6 {
+  background: var(--label6-bg);
+  color: var(--label6-text);
+}
+
+.cluster-card__label-badge.label7 {
+  background: var(--label7-bg);
+  color: var(--label7-text);
+}
+
+.cluster-card__label-badge.label8 {
+  background: var(--label8-bg);
+  color: var(--label8-text);
+}
+
+.cluster-card__label-badge.label9 {
+  background: var(--label9-bg);
+  color: var(--label9-text);
 }
 
 /* Custom label styles */

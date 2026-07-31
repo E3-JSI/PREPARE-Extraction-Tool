@@ -1,3 +1,4 @@
+import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 
 import Button from "@components/Button";
@@ -7,7 +8,7 @@ import styles from "./styles.module.css";
 interface WorkflowCardProps {
   title: string;
   description: string;
-  icon?: any;
+  icon?: IconProp;
   stats: Array<{ label: string; value: string | number }>;
   progress?: { current: number; total: number };
   actions: Array<{ label: string; onClick: () => void; variant?: "primary" | "secondary"; disabled?: boolean }>;

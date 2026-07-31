@@ -39,13 +39,13 @@
   position: sticky;
   top: 0;
   z-index: 10;
-  background: #f8fafc;
+  background: var(--color-app-bg);
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 12px 0;
   margin: 0 0 24px 0;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .toolbar__controls {
@@ -61,9 +61,9 @@
 .search-input {
   flex: 1;
   padding: 10px 14px;
-  background: #f9fafb;
-  color: #374151;
-  border: 1px solid #e5e7eb;
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
   border-radius: 6px;
   font-size: 14px;
   transition: all 0.2s ease;
@@ -71,13 +71,13 @@
 
 .search-input:focus {
   outline: none;
-  border-color: #11415e;
-  background: #ffffff;
+  border-color: var(--color-primary-dark);
+  background: var(--color-surface);
   box-shadow: 0 0 0 3px rgba(76, 101, 175, 0.1);
 }
 
 .search-input::placeholder {
-  color: #9ca3af;
+  color: var(--color-gray-400);
 }
 
 /* ================================================
@@ -98,20 +98,20 @@
 .empty-state {
   text-align: center;
   padding: 60px 40px;
-  background: #ffffff;
+  background: var(--color-surface);
   border-radius: 12px;
-  border: 2px dashed #d1d5db;
+  border: 2px dashed var(--color-gray-300);
 }
 
 .empty-state h2 {
   font-size: 20px;
   font-weight: 600;
-  color: #11415e;
+  color: var(--color-primary-dark);
   margin-bottom: 8px;
 }
 
 .empty-state p {
-  color: #6b7280;
+  color: var(--color-text-muted);
   font-size: 14px;
   margin-bottom: 20px;
 }
@@ -123,14 +123,14 @@
 .loading {
   text-align: center;
   padding: 40px;
-  color: #6b7280;
+  color: var(--color-text-muted);
   font-size: 14px;
 }
 
 .error {
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  color: #dc2626;
+  background: var(--color-error-tint);
+  border: 1px solid var(--color-error-border);
+  color: var(--color-error);
   padding: 12px 16px;
   border-radius: 6px;
   margin-bottom: 16px;
@@ -143,7 +143,7 @@
 .error button {
   background: none;
   border: none;
-  color: #dc2626;
+  color: var(--color-error);
   font-size: 20px;
   cursor: pointer;
   padding: 0;
@@ -165,7 +165,7 @@
   width: 40px;
   height: 40px;
   border-radius: 4px;
-  background: #144d70;
+  background: var(--color-primary);
   color: white;
   border: none;
   font-size: 20px;
@@ -176,7 +176,7 @@
 }
 
 .back-to-top:hover {
-  background: #11415e;
+  background: var(--color-primary-dark);
   transform: translateY(-2px);
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
 }
@@ -195,10 +195,10 @@
 .alphabet-nav__button {
   width: 32px;
   height: 32px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-border);
   border-radius: 4px;
-  background: #ffffff;
-  color: #374151;
+  background: var(--color-surface);
+  color: var(--color-text);
   padding: 0;
   font-size: 14px;
   font-weight: 500;
@@ -207,19 +207,44 @@
 }
 
 .alphabet-nav__button:hover:not(:disabled):not(.alphabet-nav__button--active) {
-  background: #f6fafc;
-  border-color: #11415e;
-  color: #144d70;
+  background: var(--color-surface-alt);
+  border-color: var(--color-primary-dark);
+  color: var(--color-primary);
 }
 
 .alphabet-nav__button--active {
-  background-color: #144d70 !important;
-  border-color: #144d70 !important;
-  color: #ffffff !important;
+  background-color: var(--color-primary) !important;
+  border-color: var(--color-primary) !important;
+  color: var(--color-surface) !important;
 }
 
 .alphabet-nav__button--disabled {
-  background: #f9fafb;
-  color: #d1d5db;
+  background: var(--color-surface-alt);
+  color: var(--color-gray-300);
   cursor: not-allowed;
+}
+
+/* Cluster All Labels progress banner */
+.cluster-all-progress {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  background: var(--color-info-tint);
+  border: 1px solid var(--color-info-tint);
+  border-radius: 6px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.cluster-all-progress__label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-info-hover);
+  white-space: nowrap;
+}
+
+.cluster-all-progress__bar {
+  flex: 1;
+  min-width: 200px;
 }

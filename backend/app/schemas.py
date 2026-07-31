@@ -1,10 +1,10 @@
 import re
 from math import ceil
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.models_db import Record, Concept, SourceTerm, Cluster, ProcessingStatus
 
 
@@ -73,6 +73,68 @@ class ExtractionJobStatusResponse(BaseModel):
     completed: int
     status: str
     error_message: Optional[str] = None
+
+
+class ClusterJobStartResponse(BaseModel):
+    """Response when a dataset "cluster all labels" job is queued."""
+
+    job_id: int
+    dataset_id: int
+    total: int
+    status: str
+
+
+class ClusterJobStatusResponse(BaseModel):
+    """Progress snapshot for a dataset cluster-all job (progress unit = labels)."""
+
+    job_id: int
+    dataset_id: int
+    total: int
+    completed: int
+    status: str
+    clustered_labels: List[str] = []
+    skipped_labels: List[str] = []
+    error_message: Optional[str] = None
+
+
+class LiveEvalStartRequest(BaseModel):
+    """Request body to start a user-triggered live evaluation run."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_id: int
+    dataset_id: int
+
+
+class LiveEvalJobStartResponse(BaseModel):
+    """Response when a live-eval job is queued (or completed immediately)."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    job_id: int
+    dataset_id: int
+    model_id: int
+    total: int
+    status: str
+    # Set when the job short-circuits (e.g. no held-out reviewed records).
+    message: Optional[str] = None
+
+
+class LiveEvalJobStatusResponse(BaseModel):
+    """Progress snapshot for a live-eval job, with metrics once computed."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    job_id: int
+    dataset_id: int
+    model_id: int
+    total: int
+    completed: int
+    status: str
+    error_message: Optional[str] = None
+    # Computed metrics: per-label exact/relaxed/overlap P/R/F1 + macro aggregate,
+    # held-out count, and a message for the empty-set case. Null until computed.
+    metrics: Optional[Dict[str, Any]] = None
 
 
 # ================================================
@@ -646,12 +708,26 @@ class AutoMapAllRequest(BaseModel):
     search_type: str = "vector"  # "vector" or "hybrid"
 
 
-class AutoMapAllResponse(BaseModel):
-    """Response for bulk auto-mapping operation"""
+class MappingJobStartResponse(BaseModel):
+    """Response when an auto-map-all job is queued."""
 
+    job_id: int
+    dataset_id: int
+    total: int
+    status: str
+
+
+class MappingJobStatusResponse(BaseModel):
+    """Progress snapshot for an auto-map-all job."""
+
+    job_id: int
+    dataset_id: int
+    total: int
+    completed: int
     mapped_count: int
     failed_count: int
-    total_clusters: int
+    status: str
+    error_message: Optional[str] = None
 
 
 class ConceptHierarchy(BaseModel):
@@ -675,3 +751,273 @@ class DistinctValuesOutput(BaseModel):
     """Response model for distinct filter values (domains, concept classes)."""
 
     values: List[str]
+
+
+# ================================================
+# Training / monitoring schemas
+# ================================================
+
+
+class GLiNERTrainingRequest(BaseModel):
+    """Request body to start a GLiNER training run.
+
+    Multiple datasets can be selected for training, and (optionally) a separate
+    set of datasets for evaluation. The legacy single ``dataset_id`` field is
+    still accepted for backward compatibility and folded into ``dataset_ids``.
+
+    Constraints (enforced as 422 on invalid input): at least one training
+    dataset, at least one label, a validation split in [0, 1), and
+    hyperparameters in valid ranges (epochs >= 1, learning rate > 0, batch >= 1).
+    """
+
+    # Legacy single-dataset field; folded into ``dataset_ids`` if provided.
+    dataset_id: Optional[int] = None
+    dataset_ids: List[int] = Field(default_factory=list)
+    eval_dataset_ids: List[int] = Field(default_factory=list)
+    labels: List[str] = Field(default_factory=list, min_length=1)
+    base_model: str = "urchade/gliner_small-v2.1"
+    val_ratio: float = Field(default=0.1, ge=0, lt=1)
+    # Hyperparameters (defaults match the bioner trainer's current values).
+    num_epochs: int = Field(default=4, ge=1)
+    learning_rate: float = Field(default=5e-6, gt=0)
+    train_batch_size: int = Field(default=8, ge=1)
+
+    @model_validator(mode="after")
+    def _resolve_dataset_ids(self) -> "GLiNERTrainingRequest":
+        """Fold the legacy ``dataset_id`` into ``dataset_ids`` and require >= 1.
+
+        Duplicate ids are removed while preserving order; the first id becomes
+        the run's primary training dataset.
+        """
+        ids = list(self.dataset_ids)
+        if self.dataset_id is not None and self.dataset_id not in ids:
+            ids.insert(0, self.dataset_id)
+        # de-duplicate, preserve order
+        seen: set = set()
+        self.dataset_ids = [i for i in ids if not (i in seen or seen.add(i))]
+        if not self.dataset_ids:
+            raise ValueError("at least one training dataset is required")
+        # eval datasets that are also training datasets are redundant; drop them
+        train_set = set(self.dataset_ids)
+        eval_seen: set = set()
+        self.eval_dataset_ids = [
+            i
+            for i in self.eval_dataset_ids
+            if i not in train_set and not (i in eval_seen or eval_seen.add(i))
+        ]
+        return self
+
+
+class TrainingStartResponse(BaseModel):
+    run_id: int
+
+
+class TrainingRunSummary(BaseModel):
+    """A training run with the metadata needed to compare/manage runs."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    run_id: int
+    status: str
+    name: Optional[str] = None
+    base_model: Optional[str] = None
+    labels: List[str] = Field(default_factory=list)
+    val_ratio: Optional[float] = None
+    created_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    # Path to the trained model artifact (from the linked Model), if any.
+    path: Optional[str] = None
+    # Id of the linked trained Model, used to select it for extraction (if any).
+    model_id: Optional[int] = None
+    # Overall macro-F1 across labels, computed from the run's evaluation (if available).
+    score: Optional[float] = None
+    preferred: bool = False
+
+
+class TrainingRunUpdate(BaseModel):
+    """Partial update for a training run (rename / designate as preferred)."""
+
+    name: Optional[str] = None
+    preferred: Optional[bool] = None
+
+
+class TrainingRunsOutput(BaseModel):
+    """Paginated list of training runs for a dataset."""
+
+    runs: List[TrainingRunSummary]
+    pagination: PaginationMetadata
+
+
+class RunEvaluationResponse(BaseModel):
+    run_id: int
+    per_label: Dict[str, Dict[str, Any]]
+
+
+class ErrorSpan(BaseModel):
+    """A gold or predicted span within an example error's context text."""
+
+    text: str
+    start: int
+    end: int
+    label: str
+
+
+class ErrorExample(BaseModel):
+    """One concrete per-label error: a context snippet with a gold and/or predicted span.
+
+    A false negative carries a ``gold`` span (missed) with no ``predicted``; a
+    false positive carries a ``predicted`` span (wrong) with no ``gold``.
+    """
+
+    text: str
+    gold: Optional[ErrorSpan] = None
+    predicted: Optional[ErrorSpan] = None
+
+
+class LabelErrorAnalysis(BaseModel):
+    """Per-label confusion summary plus a bounded sample of example errors."""
+
+    precision: Optional[float] = None
+    recall: Optional[float] = None
+    fp: Optional[int] = None
+    fn: Optional[int] = None
+    examples: List[ErrorExample] = Field(default_factory=list)
+
+
+class RunErrorAnalysisResponse(BaseModel):
+    """Per-label error analysis for a run; ``available`` is False for older runs."""
+
+    run_id: int
+    available: bool
+    per_label: Dict[str, LabelErrorAnalysis] = Field(default_factory=dict)
+
+
+class TrainingMetricPoint(BaseModel):
+    epoch: int
+    loss: Optional[float] = None
+    step: Optional[int] = None
+    eval_loss: Optional[float] = None
+
+
+class ActiveTrainingRunResponse(BaseModel):
+    """The in-flight training run, returned so the Monitor page can rehydrate
+    live progress after navigation or a full page reload (null when none)."""
+
+    run_id: int
+    dataset_ids: List[int] = Field(default_factory=list)
+    status: str
+    # Set when the run was just reconciled as dead (trainer vanished).
+    error_message: Optional[str] = None
+    total_steps: Optional[int] = None
+    current_step: Optional[int] = None
+    num_epochs: Optional[int] = None
+    current_epoch: Optional[int] = None
+    metrics: List[TrainingMetricPoint] = Field(default_factory=list)
+    # Derived pre-training phase for the Monitor stepper (one of "loading",
+    # "baseline", "init", "training"), or None when no run is in flight. Lets the
+    # stepper rehydrate mid-gap, before the first training step emits a metric.
+    phase: Optional[str] = None
+
+
+class FullStatsRequest(BaseModel):
+    """Request body for aggregated stats across multiple datasets."""
+
+    dataset_ids: List[int] = Field(default_factory=list, min_length=1)
+
+
+class FullStatsResponse(BaseModel):
+    # Totals over the whole dataset(s).
+    totalRecords: int
+    totalTerms: int
+    labelDistribution: Dict[str, int]
+    # Reviewed, training-eligible subset (what actually trains/evaluates).
+    reviewedRecords: int
+    reviewedTerms: int
+    reviewedLabelDistribution: Dict[str, int]
+
+
+# ================================================
+# NER model selection schemas
+# ================================================
+
+
+class ModelSummary(BaseModel):
+    """A trained NER model that can be selected for extraction."""
+
+    id: int
+    name: str
+    version: str
+    base_model: Optional[str] = None
+    path: Optional[str] = None
+    dataset_id: Optional[int] = None
+    created_at: Optional[datetime] = None
+    # Overall macro-F1 across labels, if the model has been evaluated.
+    score: Optional[float] = None
+    run_id: Optional[int] = None  # links a model to its training run
+    is_active: bool = False  # is this the global active model?
+    # Provenance: "trained" | "discovered" | "baseline" (null on legacy rows).
+    source: Optional[str] = None
+    # Backing engine: "gliner" | "huggingface" (null for anchors).
+    engine: Optional[str] = None
+
+
+class ModelsOutput(BaseModel):
+    """List of trained models available for selection."""
+
+    models: List[ModelSummary]
+
+
+class DiscoveredModelSummary(ModelSummary):
+    """A model row enriched with live bioner scan info for the rescan view."""
+
+    # From the on-disk scan: a LoRA/PEFT adapter needs a base model, so it is not
+    # directly selectable as the active extraction model.
+    is_adapter: bool = False
+    # True when this model can be activated in the running bioner process:
+    # its engine matches the launch engine and it is not an adapter.
+    activatable: bool = True
+
+
+class DefaultModelInfo(BaseModel):
+    """bioner's launch default model (what /ner runs when nothing is selected)."""
+
+    name: str
+    engine: Optional[str] = None
+
+
+class RescanModelsResponse(BaseModel):
+    """Reconciled model list plus live bioner engine/default context."""
+
+    models: List[DiscoveredModelSummary]
+    current_engine: Optional[str] = None
+    default_model: Optional[DefaultModelInfo] = None
+
+
+class ModelDetailResponse(BaseModel):
+    """Detail for one trained model (per-model view; no cross-model comparison)."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_id: int
+    run_id: Optional[int] = None
+    base_model: Optional[str] = None
+    train_dataset_ids: List[int] = []
+    eval_dataset_ids: List[int] = []
+    train_stats: Optional[dict] = None
+    labels: List[str] = []
+    per_label_trained: Dict[str, Dict[str, Any]] = {}
+    per_label_baseline: Dict[str, Dict[str, Any]] = {}
+
+
+class ActiveModelResponse(BaseModel):
+    """The globally selected extraction model (null = bioner default)."""
+
+    active_model: Optional[ModelSummary] = None
+
+
+class SetActiveModelRequest(BaseModel):
+    """Set (``model_id``) or clear (``null``) the global active extraction model."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_id: Optional[int] = None

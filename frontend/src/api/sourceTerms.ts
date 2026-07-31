@@ -1,8 +1,19 @@
-import type { SourceTermsOutput, SourceTermOutput, SourceTermCreate, SourceTermUpdate, SourceTermLink, MessageOutput } from "types";
+import type {
+  SourceTermsOutput,
+  SourceTermOutput,
+  SourceTermCreate,
+  SourceTermUpdate,
+  SourceTermLink,
+  MessageOutput,
+} from "types";
 
 import { apiRequest } from "./client";
 
-export async function getRecordSourceTerms(datasetId: number, recordId: number, limit = 50): Promise<SourceTermsOutput> {
+export async function getRecordSourceTerms(
+  datasetId: number,
+  recordId: number,
+  limit = 50
+): Promise<SourceTermsOutput> {
   return apiRequest<SourceTermsOutput>(`/datasets/${datasetId}/records/${recordId}/source-terms?limit=${limit}`);
 }
 
@@ -31,7 +42,7 @@ export async function updateSourceTerm(termId: number, update: SourceTermUpdate)
 }
 
 export async function createSourceTermLink(fromTermId: number, toTermId: number): Promise<SourceTermLink> {
-  return apiRequest<SourceTermLink>(`/source-terms/links`, {
+  return apiRequest<SourceTermLink>("/source-terms/links", {
     method: "POST",
     body: JSON.stringify({ from_term_id: fromTermId, to_term_id: toTermId }),
   });

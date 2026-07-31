@@ -316,10 +316,17 @@ def _filter_duplicates(db: Session, batch: list) -> list:
     return new_concepts
 
 
-def _insert_and_index_batch(db: Session, batch: list):
+def _insert_and_index_batch(
+    db: Session, batch: list, new_vocab_ids: set, reused_inserted_ids: list
+):
     """Insert a batch of Concepts via Core INSERT RETURNING and index in ES.
 
     Skips concepts that already exist (by vocab_term_id + vocabulary_id).
+
+    Records (concept_id, vocab_id) for concepts inserted into REUSED
+    (pre-existing) vocabularies in ``reused_inserted_ids`` so a later failure
+    can roll them back from both PostgreSQL and Elasticsearch. Tracking happens
+    BEFORE indexing so a mid-index failure still leaves a complete record.
     """
     batch = _filter_duplicates(db, batch)
     if not batch:
@@ -345,6 +352,13 @@ def _insert_and_index_batch(db: Session, batch: list):
     db.commit()
     for concept, concept_id in zip(batch, ids):
         concept.id = concept_id
+
+    reused_inserted_ids.extend(
+        (concept_id, concept.vocabulary_id)
+        for concept, concept_id in zip(batch, ids)
+        if concept.vocabulary_id not in new_vocab_ids
+    )
+
     indexer.add_bulk_to_index(batch)
 
 
@@ -405,6 +419,9 @@ def ingest_vocabulary_background(file_path: str, current_user: User):
 
     vocabularies = {}  # vocab_name -> vocab_id
     new_vocab_ids = set()  # only IDs for newly created vocabularies
+    # (concept_id, vocab_id) inserted this run into REUSED vocabularies, so a
+    # mid-ingest failure can be rolled back from both PostgreSQL and ES.
+    reused_inserted_ids = []
     seed_user_id = get_seed_user_id(db)
     try:
 
@@ -460,13 +477,15 @@ def ingest_vocabulary_background(file_path: str, current_user: User):
             batch.append(concept)
 
             if len(batch) >= BATCH_SIZE:
-                _insert_and_index_batch(db, batch)
+                _insert_and_index_batch(
+                    db, batch, new_vocab_ids, reused_inserted_ids
+                )
                 total += len(batch)
                 batch.clear()
                 print("Rows saved:", total)
 
         if batch:
-            _insert_and_index_batch(db, batch)
+            _insert_and_index_batch(db, batch, new_vocab_ids, reused_inserted_ids)
             total += len(batch)
             print("Rows saved:", total, "-> ALL")
 
@@ -488,7 +507,7 @@ def ingest_vocabulary_background(file_path: str, current_user: User):
 
         error_msg = str(e)
 
-        # Only clean up newly created vocabularies; reused ones stay intact
+        # Newly created vocabularies: mark FAILED and drop their whole ES index.
         if new_vocab_ids:
             db.exec(
                 update(Vocabulary)
@@ -502,6 +521,26 @@ def ingest_vocabulary_background(file_path: str, current_user: User):
                     indexer.delete_index(vocab_id)
                 except Exception as es_err:
                     print(f"Failed to delete ES index for vocab {vocab_id}: {es_err}")
+
+        # Reused vocabularies stay intact, but the concepts added THIS run must
+        # be rolled back from both PostgreSQL and ES so the (committed) partial
+        # ingest does not leave the two stores inconsistent.
+        if reused_inserted_ids:
+            db.exec(
+                delete(Concept).where(
+                    Concept.id.in_([cid for cid, _ in reused_inserted_ids])
+                )
+            )
+            db.commit()
+
+            for concept_id, vocab_id in reused_inserted_ids:
+                try:
+                    indexer.delete_concept_from_index(vocab_id, concept_id)
+                except Exception as es_err:
+                    print(
+                        f"Failed to delete ES doc {concept_id} "
+                        f"from vocab {vocab_id}: {es_err}"
+                    )
 
     finally:
         db.close()
@@ -532,7 +571,7 @@ def get_processing_vocabulary_stats(
         .join(Vocabulary, Concept.vocabulary_id == Vocabulary.id)
         .where(
             Vocabulary.user_id == current_user.id,
-            Vocabulary.status == "PROCESSING",
+            Vocabulary.status == ProcessingStatus.PROCESSING,
         )
     ).one()
 

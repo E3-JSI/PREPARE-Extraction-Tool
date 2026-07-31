@@ -8,6 +8,8 @@ export interface DropdownItem {
   onClick: () => void;
   icon?: ReactNode;
   variant?: "default" | "danger";
+  disabled?: boolean;
+  title?: string;
 }
 
 export interface DropdownProps {
@@ -92,7 +94,10 @@ const Dropdown = ({ trigger, items, align = "right" }: DropdownProps) => {
 
   const menuStyle: React.CSSProperties = {
     top: menuPosition.top,
-    ...(align === "right" ? { right: window.innerWidth - menuPosition.left } : { left: menuPosition.left }),
+    left: menuPosition.left,
+    // For right alignment, menuPosition.left holds the trigger's right edge;
+    // shift the menu left by its own width so its right edge meets that point.
+    ...(align === "right" ? { transform: "translateX(-100%)" } : {}),
   };
 
   const menu = isOpen && (
@@ -105,6 +110,8 @@ const Dropdown = ({ trigger, items, align = "right" }: DropdownProps) => {
           })}
           onClick={() => handleItemClick(item)}
           type="button"
+          disabled={item.disabled}
+          title={item.title}
         >
           {item.icon && <span className={styles["dropdown__item-icon"]}>{item.icon}</span>}
           {item.label}

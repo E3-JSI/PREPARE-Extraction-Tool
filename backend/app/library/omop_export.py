@@ -79,24 +79,40 @@ def _query_export_rows(
 
     results = db.exec(statement).all()
 
-    return [
-        {
-            "source_term_id": st.id,
-            "source_term_value": st.value,
-            "linked_visit_date": st.linked_visit_date,
-            "cluster_id": st.cluster_id,
-            "record_id": r.id,
-            "patient_id": r.patient_id.strip() if r.patient_id else r.patient_id,
-            "visit_date": r.visit_date,
-            "record_text": r.text,
-            "vocab_term_id": c.vocab_term_id,
-            "domain_id": c.domain_id,
-            "vocab_term_name": c.vocab_term_name,
-            "mapping_status": m.status,
-            "linked_value": (lc.title if lc else lt.value) if lt else None,
-        }
-        for st, r, c, m, lt, lc in results
-    ]
+    # NOTE: This query INNER-joins Cluster and SourceToConceptMap, so source
+    # terms that are unclustered or unmapped are intentionally excluded from the
+    # OMOP export (only mapped terms can be routed to a CDM table).
+    #
+    # The SourceTermLink outerjoin emits one row per outgoing link, so a source
+    # term with multiple relations would otherwise appear multiple times and
+    # inflate every clinical table and era aggregation. De-duplicate per
+    # source_term_id so each source term contributes exactly one row; we keep the
+    # first linked value encountered (used for measurement/observation values).
+    rows: List[dict] = []
+    seen_term_ids: set = set()
+    for st, r, c, m, lt, lc in results:
+        if st.id in seen_term_ids:
+            continue
+        seen_term_ids.add(st.id)
+        rows.append(
+            {
+                "source_term_id": st.id,
+                "source_term_value": st.value,
+                "linked_visit_date": st.linked_visit_date,
+                "cluster_id": st.cluster_id,
+                "record_id": r.id,
+                "patient_id": r.patient_id.strip() if r.patient_id else r.patient_id,
+                "visit_date": r.visit_date,
+                "record_text": r.text,
+                "vocab_term_id": c.vocab_term_id,
+                "domain_id": c.domain_id,
+                "vocab_term_name": c.vocab_term_name,
+                "mapping_status": m.status,
+                "linked_value": (lc.title if lc else lt.value) if lt else None,
+            }
+        )
+
+    return rows
 
 
 def _write_csv(rows: List[List], columns: List[str]) -> str:

@@ -2,34 +2,6 @@
   font-family: "Nunito Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
-/* Header Section */
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 20px;
-}
-
-.header__title-section {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.header__title {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 700;
-  color: #11415e;
-}
-
-.header__subtitle {
-  margin: 2px 0 0;
-  font-size: 14px;
-  color: #6b7280;
-}
-
 /* Labels Section */
 .labels {
   display: flex;
@@ -41,7 +13,7 @@
 .labels__title {
   font-size: 14px;
   font-weight: 600;
-  color: #6b7280;
+  color: var(--color-text-muted);
 }
 
 .labels__list {
@@ -55,35 +27,44 @@
   border-radius: 4px;
   font-size: 13px;
   font-weight: 500;
-  color: #11415e;
+  color: var(--color-primary-dark);
 }
 
 .labels__badge--label1 {
-  background: #e5e7eb;
+  background: var(--label1-bg);
+  color: var(--label1-text);
 }
 .labels__badge--label2 {
-  background: #e5e7eb;
+  background: var(--label2-bg);
+  color: var(--label2-text);
 }
 .labels__badge--label3 {
-  background: #e5e7eb;
+  background: var(--label3-bg);
+  color: var(--label3-text);
 }
 .labels__badge--label4 {
-  background: #e5e7eb;
+  background: var(--label4-bg);
+  color: var(--label4-text);
 }
 .labels__badge--label5 {
-  background: #e5e7eb;
+  background: var(--label5-bg);
+  color: var(--label5-text);
 }
 .labels__badge--label6 {
-  background: #e5e7eb;
+  background: var(--label6-bg);
+  color: var(--label6-text);
 }
 .labels__badge--label7 {
-  background: #e5e7eb;
+  background: var(--label7-bg);
+  color: var(--label7-text);
 }
 .labels__badge--label8 {
-  background: #e5e7eb;
+  background: var(--label8-bg);
+  color: var(--label8-text);
 }
 .labels__badge--label9 {
-  background: #e5e7eb;
+  background: var(--label9-bg);
+  color: var(--label9-text);
 }
 
 /* Metadata Section */
@@ -92,9 +73,9 @@
   gap: 32px;
   margin-bottom: 24px;
   padding: 16px;
-  background: #f9fafb;
+  background: var(--color-surface-alt);
   border-radius: 4px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-border);
 }
 
 .metadata__item {
@@ -106,13 +87,13 @@
 .metadata__label {
   font-size: 14px;
   font-weight: 600;
-  color: #6b7280;
+  color: var(--color-text-muted);
 }
 
 .metadata__value {
   font-size: 14px;
   font-weight: 500;
-  color: #11415e;
+  color: var(--color-primary-dark);
 }
 
 /* Statistics Cards */
@@ -130,7 +111,7 @@
 .workflow__title {
   font-size: 20px;
   font-weight: 700;
-  color: #11415e;
+  color: var(--color-primary-dark);
   margin: 0 0 20px 0;
 }
 
@@ -147,7 +128,7 @@
   justify-content: center;
   min-height: 400px;
   font-size: 16px;
-  color: #6b7280;
+  color: var(--color-text-muted);
 }
 
 .page--error {
@@ -156,7 +137,7 @@
   justify-content: center;
   min-height: 400px;
   font-size: 16px;
-  color: #ef4444;
+  color: var(--color-error);
   padding: 20px;
   text-align: center;
 }
@@ -167,8 +148,8 @@
   align-items: center;
   gap: 16px;
   padding: 12px 16px;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
+  background: var(--color-info-tint);
+  border: 1px solid var(--color-info-tint);
   border-radius: 6px;
   margin-bottom: 16px;
   flex-wrap: wrap;
@@ -177,7 +158,7 @@
 .extraction-banner__label {
   font-size: 14px;
   font-weight: 500;
-  color: #1e40af;
+  color: var(--color-info-hover);
   white-space: nowrap;
 }
 
