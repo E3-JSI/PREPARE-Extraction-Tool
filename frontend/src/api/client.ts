@@ -93,6 +93,24 @@ async function refreshAccessToken(): Promise<boolean> {
 // API client
 // ================================================
 
+/**
+ * Error thrown for non-OK responses. Carries the HTTP `status` and the parsed
+ * response `detail` (which may be a string or a structured object such as
+ * `{ error, message, suggestion }`) so callers can branch on machine-readable
+ * error codes. `message` is always a human-readable string.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+
+  constructor(status: number, message: string, detail: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 export interface RequestOptions extends RequestInit {
   skipAuth?: boolean;
   skipRefresh?: boolean; // Used internally to prevent infinite refresh loops
@@ -137,8 +155,15 @@ export async function apiRequest<T>(endpoint: string, options: RequestOptions = 
   }
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: "Request failed" }));
-    throw new Error(error.detail || `HTTP ${response.status}`);
+    const body = await response.json().catch(() => ({ detail: "Request failed" }));
+    const detail = (body as { detail?: unknown })?.detail;
+    // `detail` may be a plain string or a structured object (e.g. bioner's
+    // `{ error, message, suggestion }`). Derive a readable message either way.
+    const message =
+      typeof detail === "string"
+        ? detail
+        : (detail as { message?: string } | null)?.message || `HTTP ${response.status}`;
+    throw new ApiError(response.status, message, detail);
   }
 
   // Handle empty responses

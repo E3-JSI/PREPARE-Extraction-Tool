@@ -6,7 +6,7 @@
   margin: 0 0 24px;
   font-size: 28px;
   font-weight: 700;
-  color: #11415e;
+  color: var(--color-primary-dark);
 }
 
 .vocabularies__sidebar {
@@ -19,28 +19,28 @@
   padding: 12px 16px;
   margin-bottom: 16px;
   font-size: 14px;
-  color: #dc2626;
-  background-color: #fef2f2;
-  border: 1px solid #fecaca;
+  color: var(--color-error);
+  background-color: var(--color-error-tint);
+  border: 1px solid var(--color-error-border);
   border-radius: 8px;
 }
 
 .vocabularies__loading {
   padding: 40px;
   text-align: center;
-  color: #6b7280;
+  color: var(--color-text-muted);
   font-size: 14px;
 }
 
 .vocabularies__link {
-  color: #11415e;
+  color: var(--color-primary-dark);
   font-weight: 500;
   text-decoration: none;
   transition: color 0.2s ease;
 }
 
 .vocabularies__link:hover {
-  color: #11415e;
+  color: var(--color-primary-dark);
   text-decoration: underline;
 }
 
@@ -61,5 +61,5 @@
 
 .vocabularies__processing-note {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--color-text-muted);
 }

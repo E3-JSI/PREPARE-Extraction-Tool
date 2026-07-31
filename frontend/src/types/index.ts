@@ -208,6 +208,24 @@ export interface ExtractionJobStatusResponse {
   error_message?: string | null;
 }
 
+export interface ClusterJobStartResponse {
+  job_id: string;
+  dataset_id: number;
+  total: number;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+}
+
+export interface ClusterJobStatusResponse {
+  job_id: string;
+  dataset_id: number;
+  total: number;
+  completed: number;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  clustered_labels: string[];
+  skipped_labels: string[];
+  error_message?: string | null;
+}
+
 export interface DatasetOverview {
   dataset: Dataset;
   stats: DatasetStats;
@@ -430,10 +448,22 @@ export interface AutoMapAllRequest {
   search_type?: "vector" | "hybrid";
 }
 
-export interface AutoMapAllResponse {
+export interface MappingJobStartResponse {
+  job_id: string;
+  dataset_id: number;
+  total: number;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+}
+
+export interface MappingJobStatusResponse {
+  job_id: string;
+  dataset_id: number;
+  total: number;
+  completed: number;
   mapped_count: number;
   failed_count: number;
-  total_clusters: number;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  error_message?: string | null;
 }
 
 export interface ConceptSearchParams {
@@ -455,4 +485,255 @@ export interface ConceptSearchParams {
 
 export interface DistinctValuesOutput {
   values: string[];
+}
+
+// ================================================
+// Monitoring / training types
+// ================================================
+
+/** Minimal dataset shape used by the monitoring dashboard. */
+export interface MonitorDataset {
+  id: number;
+  name: string;
+}
+
+/** A training run with the metadata needed to compare/manage runs. */
+export interface MonitorRun {
+  run_id: number;
+  status?: string;
+  name?: string | null;
+  base_model?: string | null;
+  labels?: string[];
+  val_ratio?: number | null;
+  created_at?: string | null;
+  error_message?: string | null;
+  /** Path to the trained model artifact, if any. */
+  path?: string | null;
+  /** Id of the linked trained model, used to select it for extraction (if any). */
+  model_id?: number | null;
+  /** Overall macro-F1 across labels, if evaluation is available. */
+  score?: number | null;
+  /** Whether this run is the dataset's designated preferred/best run. */
+  preferred?: boolean;
+}
+
+/** A trained NER model available for selection in extraction. */
+export interface ModelSummary {
+  id: number;
+  name: string;
+  version: string;
+  base_model?: string | null;
+  path?: string | null;
+  dataset_id?: number | null;
+  created_at?: string | null;
+  /** Overall macro-F1 across labels, if the model has been evaluated. */
+  score?: number | null;
+  run_id?: number | null;
+  is_active?: boolean;
+  /** Provenance: "trained" | "discovered" | "baseline". */
+  source?: string | null;
+  /** Backing engine: "gliner" | "huggingface". */
+  engine?: string | null;
+}
+
+/** A model enriched with live bioner scan info (from the rescan endpoint). */
+export interface DiscoveredModelSummary extends ModelSummary {
+  /** A LoRA/PEFT adapter — needs a base model, not directly selectable. */
+  is_adapter: boolean;
+  /** Can this model be activated in the running bioner process
+   *  (engine matches the launch engine and it is not an adapter)? */
+  activatable: boolean;
+}
+
+/** bioner's launch default model (what /ner runs when nothing is selected). */
+export interface DefaultModelInfo {
+  name: string;
+  engine?: string | null;
+}
+
+/** Reconciled model list plus live bioner engine/default context. */
+export interface RescanModelsResponse {
+  models: DiscoveredModelSummary[];
+  current_engine?: string | null;
+  default_model?: DefaultModelInfo | null;
+}
+
+/** List of trained models available for selection. */
+export interface ModelsOutput {
+  models: ModelSummary[];
+}
+
+/** The global active extraction model (null active_model = bioner default). */
+export interface ActiveModelResponse {
+  active_model?: ModelSummary | null;
+}
+
+/** Paginated list of training runs for a dataset. */
+export interface RunsOutput {
+  runs: MonitorRun[];
+  pagination: PaginationMetadata;
+}
+
+/** Partial update for a training run (rename / designate as preferred). */
+export interface RunUpdate {
+  name?: string | null;
+  preferred?: boolean;
+}
+
+/** Per-label evaluation metrics returned by the bioner backend. */
+export interface PerLabelMetrics {
+  exact_f1?: number;
+  relaxed_f1?: number;
+  f1?: number;
+  precision: number;
+  recall: number;
+}
+
+/** Evaluation response for a single run. */
+export interface EvaluationResponse {
+  run_id: number;
+  /** Display name for the entry; the default-model baseline uses "Base model".
+   * Falls back to `Run #<run_id>` when absent. */
+  name?: string;
+  /** True for the default-model baseline entry (run_id 0, not a real run). */
+  is_baseline?: boolean;
+  per_label: { [label: string]: PerLabelMetrics };
+}
+
+/** A gold or predicted span inside an example error's context text. */
+export interface ErrorSpan {
+  text: string;
+  start: number;
+  end: number;
+  label: string;
+}
+
+/** One concrete per-label error. A missed gold span has `gold` set and
+ * `predicted` null; a wrong prediction has `predicted` set and `gold` null. */
+export interface ErrorExample {
+  text: string;
+  gold: ErrorSpan | null;
+  predicted: ErrorSpan | null;
+}
+
+/** Per-label confusion summary plus a bounded sample of example errors. */
+export interface LabelErrorAnalysis {
+  precision?: number | null;
+  recall?: number | null;
+  fp?: number | null;
+  fn?: number | null;
+  examples: ErrorExample[];
+}
+
+/** Per-label error analysis for a run. `available` is false for older runs
+ * trained before error analysis was recorded. */
+export interface RunErrorAnalysis {
+  run_id: number;
+  available: boolean;
+  per_label: { [label: string]: LabelErrorAnalysis };
+}
+
+/** A single training metric point streamed over the websocket.
+ *  `loss` is null on eval-only rows (which carry `eval_loss` instead). */
+export interface TrainingMetric {
+  epoch: number;
+  loss: number | null;
+  step?: number | null;
+  eval_loss?: number | null;
+}
+
+/** The in-flight training run, used to rehydrate live Monitor progress after
+ *  navigating away and back or after a full page reload. Null when idle. */
+export interface ActiveTrainingRun {
+  run_id: number;
+  dataset_ids: number[];
+  status: string;
+  /** Why the run failed — set when the backend just reconciled it as dead. */
+  error_message?: string | null;
+  total_steps?: number | null;
+  current_step?: number | null;
+  num_epochs?: number | null;
+  current_epoch?: number | null;
+  metrics: TrainingMetric[];
+  /** Derived pre-training phase ("loading" | "baseline" | "init" | "training"),
+   *  used to rehydrate the phase stepper mid-gap. Null when no run is in flight. */
+  phase?: string | null;
+}
+
+/** Per-model detail: training datasets, snapshot stats, base-vs-trained eval. */
+export interface ModelDetailResponse {
+  model_id: number;
+  run_id?: number | null;
+  base_model?: string | null;
+  train_dataset_ids: number[];
+  eval_dataset_ids: number[];
+  train_stats?: {
+    record_count?: number;
+    term_count?: number;
+    label_distribution?: { [label: string]: number };
+    // Reviewed subset that actually trained (absent on older snapshots).
+    reviewed_record_count?: number;
+    reviewed_term_count?: number;
+    reviewed_label_distribution?: { [label: string]: number };
+    total_steps?: number;
+    val_ratio?: number;
+  } | null;
+  labels: string[];
+  per_label_trained: { [label: string]: { [metric: string]: number } };
+  per_label_baseline: { [label: string]: { [metric: string]: number } };
+}
+
+/** Precision/recall/F1 for one match mode (exact/relaxed/overlap). */
+export interface LiveEvalScore {
+  precision: number;
+  recall: number;
+  f1: number;
+}
+
+/** Computed live-eval metrics: per-label + macro aggregate across match modes. */
+export interface LiveEvalMetrics {
+  labels: string[];
+  match_types: string[];
+  per_label: { [label: string]: { [matchType: string]: LiveEvalScore } };
+  aggregate: { [matchType: string]: LiveEvalScore };
+  aggregate_method?: string;
+  gold_entity_count?: number;
+  pred_entity_count?: number;
+  heldout_count: number;
+  /** Set when the held-out set is empty (nothing to score). */
+  message?: string;
+}
+
+/** Response when a live-eval job is queued (or short-circuits immediately). */
+export interface LiveEvalJobStartResponse {
+  job_id: number;
+  dataset_id: number;
+  model_id: number;
+  total: number;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  message?: string | null;
+}
+
+/** Progress snapshot for a live-eval job, with metrics once complete. */
+export interface LiveEvalJobStatusResponse {
+  job_id: number;
+  dataset_id: number;
+  model_id: number;
+  total: number;
+  completed: number;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  error_message?: string | null;
+  metrics?: LiveEvalMetrics | null;
+}
+
+/** Dataset statistics used by the monitoring dashboard. */
+export interface MonitorDatasetStats {
+  // Totals over the whole dataset(s).
+  totalRecords: number;
+  totalTerms: number;
+  labelDistribution: { [label: string]: number };
+  // Reviewed, training-eligible subset (only reviewed records train/evaluate).
+  reviewedRecords: number;
+  reviewedTerms: number;
+  reviewedLabelDistribution: { [label: string]: number };
 }

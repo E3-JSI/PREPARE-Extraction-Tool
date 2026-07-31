@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import classNames from "classnames";
 
 import Button from "@components/Button";
@@ -15,16 +15,55 @@ export interface SidebarProps {
 }
 
 const Sidebar = ({ isOpen, onClose, title, width = "400px", children, disableEscapeClose = false }: SidebarProps) => {
+  const asideRef = useRef<HTMLElement>(null);
+  const previousActiveElement = useRef<HTMLElement | null>(null);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && isOpen && !disableEscapeClose) {
+      if (!isOpen) return;
+
+      if (e.key === "Escape" && !disableEscapeClose) {
         onClose();
+        return;
+      }
+
+      // Focus trap
+      if (e.key === "Tab" && asideRef.current) {
+        const focusableElements = asideRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusableElements.length === 0) return;
+
+        const firstElement = focusableElements[0];
+        const lastElement = focusableElements[focusableElements.length - 1];
+
+        if (e.shiftKey && document.activeElement === firstElement) {
+          e.preventDefault();
+          lastElement.focus();
+        } else if (!e.shiftKey && document.activeElement === lastElement) {
+          e.preventDefault();
+          firstElement.focus();
+        }
       }
     };
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose, disableEscapeClose]);
+
+  // Capture/restore focus and move focus into the drawer when opening
+  useEffect(() => {
+    if (isOpen) {
+      previousActiveElement.current = document.activeElement as HTMLElement;
+      const firstFocusable = asideRef.current?.querySelector<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      firstFocusable?.focus();
+      return () => {
+        previousActiveElement.current?.focus();
+      };
+    }
+  }, [isOpen]);
 
   useEffect(() => {
     if (isOpen) {
@@ -48,6 +87,7 @@ const Sidebar = ({ isOpen, onClose, title, width = "400px", children, disableEsc
       />
 
       <aside
+        ref={asideRef}
         className={classNames(styles.sidebar, {
           [styles["sidebar--open"]]: isOpen,
         })}

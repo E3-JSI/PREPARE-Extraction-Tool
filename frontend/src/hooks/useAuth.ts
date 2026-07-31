@@ -26,6 +26,10 @@ export interface AuthContextType {
 
 export const AuthContext = createContext<AuthContextType | null>(null);
 
+// Message thrown by the API client (src/api/client.ts) when a 401 occurs and the
+// refresh token is also invalid — i.e. the only signal of a genuine logged-out state.
+const SESSION_EXPIRED_MESSAGE = "Session expired. Please log in again.";
+
 // ================================================
 // Auth Hook
 // ================================================
@@ -50,21 +54,40 @@ export function useAuthProvider(): AuthContextType {
 
   // Check for existing token on mount
   useEffect(() => {
+    // Guard against setState after unmount / cancelled run
+    let active = true;
+
     const checkAuth = async () => {
       const token = getToken();
       if (token) {
         try {
           const userData = await getCurrentUser();
-          setUser(userData);
-        } catch {
-          // Token is invalid, clear it
-          clearToken();
+          if (active) {
+            setUser(userData);
+          }
+        } catch (error) {
+          // Only treat a real 401 (refresh failed → session expired) as logged-out.
+          // The API client auto-refreshes on 401 and throws SESSION_EXPIRED_MESSAGE
+          // only when the refresh token is also invalid. Transient errors
+          // (network/5xx) must NOT wipe a still-valid session.
+          if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) {
+            clearToken();
+          } else {
+            // Keep tokens intact; surface the error for diagnostics.
+            console.error("Failed to verify existing session:", error);
+          }
         }
       }
-      setIsLoading(false);
+      if (active) {
+        setIsLoading(false);
+      }
     };
 
     checkAuth();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
@@ -85,8 +108,13 @@ export function useAuthProvider(): AuthContextType {
   );
 
   const logout = useCallback(async () => {
-    await apiLogout();
-    setUser(null);
+    try {
+      await apiLogout();
+    } finally {
+      // Always tear down client-side auth state, even if the server logout call
+      // fails — otherwise a thrown error would leave the UI "logged in".
+      setUser(null);
+    }
   }, []);
 
   return {

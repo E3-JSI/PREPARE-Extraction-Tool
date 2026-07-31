@@ -35,7 +35,16 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   const inputRef = useRef<HTMLInputElement>(null);
   const [inputValue, setInputValue] = useState("");
 
-  // Reset input value and focus when opening
+  // Scroll-lock while the dialog is open (keyed on isOpen only)
+  useEffect(() => {
+    if (!isOpen) return;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [isOpen]);
+
+  // Reset input, capture/restore focus when opening/closing
   useEffect(() => {
     if (isOpen) {
       setInputValue("");
@@ -45,14 +54,10 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       } else {
         confirmButtonRef.current?.focus();
       }
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-      previousActiveElement.current?.focus();
+      return () => {
+        previousActiveElement.current?.focus();
+      };
     }
-    return () => {
-      document.body.style.overflow = "";
-    };
   }, [isOpen, showInput]);
 
   // Handle keyboard events
@@ -68,8 +73,10 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       // Focus trap
       if (e.key === "Tab" && dialogRef.current) {
         const focusableElements = dialogRef.current.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
         );
+        if (focusableElements.length === 0) return;
+
         const firstElement = focusableElements[0];
         const lastElement = focusableElements[focusableElements.length - 1];
 

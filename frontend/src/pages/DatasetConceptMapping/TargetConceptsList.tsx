@@ -115,7 +115,9 @@ const TargetConceptsList: React.FC<TargetConceptsListProps> = ({
     <div className={styles["target-concepts-list-panel"]}>
       <div className={styles["target-concepts-list-panel__header"]}>
         <h3 className={styles["target-concepts-list-panel__title"]}>Target Concepts</h3>
-        {pagination && <span className={styles["target-concepts-list-panel__total-results"]}>{pagination.total} results</span>}
+        {pagination && (
+          <span className={styles["target-concepts-list-panel__total-results"]}>{pagination.total} results</span>
+        )}
       </div>
       <div className={styles["target-concepts-list-panel__content"]}>
         <Table

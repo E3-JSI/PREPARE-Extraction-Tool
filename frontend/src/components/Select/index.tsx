@@ -175,7 +175,7 @@ export const Select: React.FC<SelectProps> = ({
       style={{
         top: menuPosition.top,
         left: menuPosition.left,
-        width: menuPosition.width,
+        minWidth: menuPosition.width,
       }}
     >
       {options.length === 0 ? (

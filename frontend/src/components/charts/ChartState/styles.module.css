@@ -1,0 +1,38 @@
+.state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  text-align: center;
+}
+
+.state__icon {
+  color: var(--color-text-muted);
+  opacity: 0.6;
+  display: flex;
+}
+
+.state__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.state__message {
+  margin: 0;
+  max-width: 360px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text-muted);
+}
+
+.state[data-variant="error"] .state__title {
+  color: var(--color-error);
+}
+
+.state__action {
+  margin-top: var(--space-2);
+}

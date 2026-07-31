@@ -123,6 +123,9 @@ export function useVocabularyConcepts(vocabularyId: number) {
       standardConcept: filters.standardConcept,
     };
     fetchConcepts(1, 50, debouncedSearchQuery, searchFilters);
+    // `vocabulary` is only read as a "loaded yet?" guard — adding it would re-run this
+    // (duplicating the initial fetch) when the vocabulary finishes loading.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchConcepts, debouncedSearchQuery, filters.domain, filters.conceptClass, filters.standardConcept]);
 
   // Compute unique filter options from loaded concepts

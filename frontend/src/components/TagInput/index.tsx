@@ -25,10 +25,14 @@ const TagInput: React.FC<TagInputProps> = ({
 
   const addTags = useCallback(
     (raw: string) => {
-      const newTags = raw
-        .split(",")
-        .map((t) => t.trim())
-        .filter((t) => t !== "" && !tags.includes(t));
+      const seen = new Set(tags);
+      const newTags: string[] = [];
+      for (const t of raw.split(",").map((t) => t.trim())) {
+        if (t !== "" && !seen.has(t)) {
+          seen.add(t);
+          newTags.push(t);
+        }
+      }
       if (newTags.length > 0) {
         onChange([...tags, ...newTags]);
       }
@@ -80,7 +84,7 @@ const TagInput: React.FC<TagInputProps> = ({
       onClick={handleContainerClick}
     >
       {tags.map((tag, index) => (
-        <span key={tag} className={styles["tag-input__tag"]}>
+        <span key={`${index}-${tag}`} className={styles["tag-input__tag"]}>
           {tag}
           <button
             type="button"

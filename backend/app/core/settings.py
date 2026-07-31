@@ -34,7 +34,9 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = 2048  # 2 GB default
 
     # Service settings
-    EXTRACT_HOST: str = "http://0.0.0.0:5600"
+    # Bioner service URL. Defaults to localhost for local runs; overridden to the
+    # compose service name (http://bioner:5600) in docker-compose.
+    EXTRACT_HOST: str = "http://localhost:5600"
 
     # Model settings
     EMBEDDING_MODEL_SENTENCE: Union[str, None] = None

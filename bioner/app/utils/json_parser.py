@@ -1,10 +1,45 @@
 import re
+import ast
 import json
 import logging
 from app.interfaces import Entity
-from typing import List, Dict, Literal, Tuple
+from typing import Any, List, Dict, Literal, Tuple
 
 logger = logging.getLogger(__name__)
+
+def _coerce_entity_list(parsed: Any) -> List[Dict[str, str]]:
+    """Validate that ``parsed`` is a list of dicts.
+
+    Returns the list unchanged on success, or ``None`` if the shape is wrong so
+    callers can keep trying other parsing strategies.
+    """
+    if isinstance(parsed, list) and all(isinstance(item, dict) for item in parsed):
+        return parsed
+    return None
+
+def _loads_tolerant(fragment: str) -> List[Dict[str, str]]:
+    """Parse a JSON-ish fragment without mangling apostrophes.
+
+    Tries strict JSON first, then ``ast.literal_eval`` for Python-style /
+    single-quoted payloads (which correctly handles apostrophes inside string
+    values, e.g. ``Crohn's disease``). Returns a validated list of dicts, or
+    ``None`` if nothing usable could be parsed.
+    """
+    fragment = fragment.strip()
+    if not fragment:
+        return None
+    # Strict JSON (double-quoted) first.
+    try:
+        return _coerce_entity_list(json.loads(fragment))
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Python literal / single-quoted: ast.literal_eval understands embedded
+    # apostrophes inside quoted strings, unlike a blind quote swap.
+    try:
+        return _coerce_entity_list(ast.literal_eval(fragment))
+    except (ValueError, SyntaxError):
+        pass
+    return None
 
 def parse_response(response: str) -> List[Dict[str, str]]:
     """Parse the response from the LLM.
@@ -13,39 +48,27 @@ def parse_response(response: str) -> List[Dict[str, str]]:
         response: The response to parse.
 
     Returns:
-        The parsed response.
+        The parsed response: a list of entity dicts (possibly empty).
     """
-    try:
-        # Try to directly load the response as JSON
-        entities = json.loads(response)
+    # Try to directly load the whole response.
+    entities = _loads_tolerant(response)
+    if entities is not None:
         return entities
-    except json.JSONDecodeError:
-        pass
-    try:
-        # Use a regex pattern to find JSON-like structures
-        json_match = re.search(r'\[\s*\{.*?\}\s*\]', response, re.DOTALL)
-        if json_match:
-            json_str = json_match.group()
-            # Replace single quotes with double quotes for JSON compatibility
-            json_str = json_str.replace("'", '"')
-            # Attempt to load the JSON
-            entities = json.loads(json_str)
+
+    # Use a regex pattern to find JSON-like structures.
+    json_match = re.search(r'\[\s*\{.*?\}\s*\]', response, re.DOTALL)
+    if json_match:
+        entities = _loads_tolerant(json_match.group())
+        if entities is not None:
             return entities
-    except json.JSONDecodeError:
-        pass
-    # Fallback for cases where strict JSON parsing fails
-    try:
-        # Extract lines containing the output explicitly
-        lines = response.splitlines()
-        for line in lines:
-            if "[" in line and "{" in line:
-                # Extract possible JSON-like content
-                json_str = line.strip()
-                json_str = json_str.replace("'", '"')  # Handle single quotes
-                entities = json.loads(json_str)
+
+    # Fallback: scan individual lines for a JSON-like array.
+    for line in response.splitlines():
+        if "[" in line and "{" in line:
+            entities = _loads_tolerant(line)
+            if entities is not None:
                 return entities
-    except json.JSONDecodeError:
-        pass
+
     logger.warning("No valid JSON found in the response.")
     return []
 
@@ -87,8 +110,14 @@ def find_entity_spans(
     raw_spans: List[Tuple[int, int, str, str]] = []
 
     for ent in entities:
-        ent_text = ent["text"]
-        ent_label = ent["label"]
+        # Degrade gracefully: skip anything that isn't a well-formed entity
+        # dict instead of raising and failing the whole NER request.
+        if not isinstance(ent, dict):
+            continue
+        ent_text = ent.get("text")
+        ent_label = ent.get("label")
+        if not isinstance(ent_text, str) or not isinstance(ent_label, str):
+            continue
         pattern = _compile_pattern(ent_text, short_word_len=short_word_len)
         for m in re.finditer(pattern, text, flags=flags):
             start, end = m.start(), m.end()

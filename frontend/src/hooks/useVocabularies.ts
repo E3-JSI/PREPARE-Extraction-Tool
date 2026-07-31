@@ -14,7 +14,7 @@ import {
 const POLL_INTERVAL_MS = 3000;
 
 function hasActiveProcessing(items: Vocabulary[]): boolean {
-  return items.some((v) => v.status === "PENDING" || v.status === "PROCESSING" || v.status === "DELETED");
+  return items.some((v) => v.status === "PENDING" || v.status === "PROCESSING");
 }
 
 export function useVocabularies() {

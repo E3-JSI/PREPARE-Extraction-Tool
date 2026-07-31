@@ -1,3 +1,7 @@
+# WIP: the GLiNER2 engine is not fully implemented yet. It is intentionally NOT
+# wired into build_engine() / the --engine choices, and the `gliner2` dependency
+# is commented out in requirements.txt. Re-enable both when this is finished.
+import os
 from typing import List
 from gliner2 import GLiNER2
 
@@ -17,9 +21,12 @@ class Gliner2Engine(BaseEngine):
         self._initialize()
 
     def _initialize(self):
-        self.model = GLiNER2.from_pretrained(self.model, 
-                                            load_tokenizer=False, 
-                                            local_files_only=False)
+        # Resolve from the local directory when the model path exists on disk;
+        # otherwise treat it as a HF-hub id and allow network resolution.
+        local_only = os.path.isdir(self.model)
+        self.model = GLiNER2.from_pretrained(self.model,
+                                            load_tokenizer=True,
+                                            local_files_only=local_only)
         self.model.to(self.device)
 
     def extract_entities(self, medical_text: str, labels: list[str] | dict[str, str]) -> List[Entity]:

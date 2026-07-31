@@ -5,7 +5,8 @@ import type {
   AutoMapRequest,
   MapClusterRequest,
   AutoMapAllRequest,
-  AutoMapAllResponse,
+  MappingJobStartResponse,
+  MappingJobStatusResponse,
   ConceptSearchParams,
   MessageOutput,
 } from "types";
@@ -45,11 +46,28 @@ export async function deleteClusterMapping(datasetId: number, clusterId: number)
   });
 }
 
-export async function autoMapAllClusters(datasetId: number, request: AutoMapAllRequest): Promise<AutoMapAllResponse> {
-  return apiRequest<AutoMapAllResponse>(`/datasets/${datasetId}/auto-map-all`, {
+// Auto-map-all runs as a backend async job: start returns a job id, then the
+// client polls status for a progress bar (mirrors the extraction job endpoints).
+export async function startAutoMapAll(datasetId: number, request: AutoMapAllRequest): Promise<MappingJobStartResponse> {
+  return apiRequest<MappingJobStartResponse>(`/datasets/${datasetId}/auto-map-all`, {
     method: "POST",
     body: JSON.stringify(request),
   });
+}
+
+export async function getAutoMapAllStatus(datasetId: number, jobId: string): Promise<MappingJobStatusResponse> {
+  return apiRequest<MappingJobStatusResponse>(`/datasets/${datasetId}/auto-map-all/${jobId}/status`);
+}
+
+export async function getActiveAutoMapJob(datasetId: number): Promise<MappingJobStatusResponse | null> {
+  const result = await apiRequest<MappingJobStatusResponse | null>(`/datasets/${datasetId}/auto-map-all/active`);
+  // apiRequest returns {} for an empty 200 body, so normalize the "no active job"
+  // case (null, undefined, or an empty/jobless object) to null.
+  return result?.job_id ? result : null;
+}
+
+export async function cancelAutoMapJob(datasetId: number, jobId: string): Promise<MessageOutput> {
+  return apiRequest<MessageOutput>(`/datasets/${datasetId}/auto-map-all/${jobId}/cancel`, { method: "POST" });
 }
 
 export async function searchConcepts(params: ConceptSearchParams): Promise<ConceptSearchResults> {
@@ -104,7 +122,7 @@ export async function exportMappings(datasetId: number, statusFilter?: string): 
 
   // Get filename from Content-Disposition header or use default
   const contentDisposition = response.headers.get("Content-Disposition");
-  const filenameMatch = contentDisposition?.match(/filename=(.+)/);
+  const filenameMatch = contentDisposition?.match(/filename="?([^"]+)"?/);
   const filename = filenameMatch ? filenameMatch[1] : `mappings_${datasetId}.zip`;
 
   // Create blob and trigger download
@@ -116,7 +134,7 @@ export async function exportMappings(datasetId: number, statusFilter?: string): 
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  window.URL.revokeObjectURL(url);
+  setTimeout(() => window.URL.revokeObjectURL(url), 0);
 }
 
 export async function importMappings(datasetId: number, file: File): Promise<MessageOutput> {

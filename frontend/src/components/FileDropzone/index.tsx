@@ -22,6 +22,7 @@ const FileDropzone = ({
   const [error, setError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragDepth = useRef(0);
 
   const validateFile = useCallback(
     (file: File): string | null => {
@@ -71,6 +72,7 @@ const FileDropzone = ({
     (e: React.DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      dragDepth.current += 1;
       if (!disabled) {
         setIsDragging(true);
       }
@@ -81,7 +83,10 @@ const FileDropzone = ({
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(false);
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) {
+      setIsDragging(false);
+    }
   }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -93,6 +98,7 @@ const FileDropzone = ({
     (e: React.DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      dragDepth.current = 0;
       setIsDragging(false);
 
       if (disabled) return;

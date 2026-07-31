@@ -55,7 +55,7 @@ export async function createDataset(
         try {
           const response = JSON.parse(xhr.responseText);
           resolve(response);
-        } catch (err) {
+        } catch {
           reject(new Error("Failed to parse response"));
         }
       } else {
@@ -132,7 +132,7 @@ export async function downloadDataset(id: number, format: "csv" | "json" | "glin
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  window.URL.revokeObjectURL(url);
+  setTimeout(() => window.URL.revokeObjectURL(url), 0);
 }
 
 export async function getDatasetStats(datasetId: number): Promise<DatasetStats> {

@@ -39,6 +39,7 @@ export interface AnnotationSidebarProps {
   onMarkReviewed?: () => void;
   isReviewed?: boolean;
   readOnly?: boolean;
+  recordInfo?: string;
 }
 
 const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
@@ -53,7 +54,6 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
   onSelectAnnotation,
   onCreateAnnotation,
   onDeleteAnnotation,
-  onUpdateAnnotationLabel: _onUpdateAnnotationLabel,
   onUpdateAnnotationDate,
   onCreateLink,
   onDeleteLink,
@@ -65,6 +65,7 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
   onMarkReviewed,
   isReviewed = false,
   readOnly = false,
+  recordInfo,
 }) => {
   // Link mode state
   const [linkMode, setLinkMode] = useState(false);
@@ -232,6 +233,7 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
     },
     [
       labels,
+      labelRelations.length,
       handleLabelSelection,
       selectedAnnotation,
       onDeleteAnnotation,
@@ -260,56 +262,141 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
   return (
     <Sidebar isOpen={isOpen} onClose={onClose} title="Annotation Panel" width="75vw" disableEscapeClose={linkMode}>
       <div className={styles["annotation-sidebar"]} onClick={() => onSelectAnnotation(null)}>
-        {/* Left side - Text to annotate */}
-        <div>
-          {/* Label selector */}
-          <div className={styles["label-section"]}>
-            <div className={styles["label-section__header"]}>
-              <h3 className={styles["section-title"]}>Labels</h3>
-              {!readOnly && labelRelations.length > 0 && (
-                <Button
-                  variant={linkMode ? "primary" : "outline"}
-                  size="small"
-                  onClick={() => {
-                    if (linkMode) {
-                      exitLinkMode();
-                    } else {
-                      setLinkMode(true);
-                      onSelectAnnotation(null);
-                    }
-                  }}
-                  title={linkMode ? "Confirm linking (Esc)" : "Link two annotations"}
-                >
-                  {linkMode ? "Confirm" : "Link"}
-                </Button>
-              )}
-            </div>
-            {linkMode && (
-              <div className={styles["link-mode-banner"]}>
-                {linkFromId === null
-                  ? "Click a highlighted term in the text to select it"
-                  : "Click a compatible term in the text to link — or click a black term to unlink"}
-              </div>
-            )}
-            <div className={styles["label-section__buttons"]}>
-              {labels.map((label, index) => (
-                <button
-                  key={label}
-                  className={classNames(styles["label-button"], styles[`label${index + 1}`], {
-                    [styles["label-button--active"]]: selectedLabel === label,
-                  })}
-                  onClick={() => handleLabelSelection(label)}
-                  disabled={readOnly || selectedAnnotation !== null || linkMode}
-                >
-                  <span className={styles["label-button__shortcut"]}>{index + 1}</span>
-                  {label}
-                </button>
-              ))}
-            </div>
-            {labels.length === 0 && (
-              <p className={styles["label-section__empty"]}>No labels defined for this dataset.</p>
-            )}
+        {/* Navigation row */}
+        <div className={styles["annotation-nav"]}>
+          <div className={styles["annotation-nav__pager"]}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                exitLinkMode();
+                onPreviousRecord?.();
+              }}
+              disabled={!onPreviousRecord || !hasPreviousRecord}
+              title="Previous record"
+            >
+              <FontAwesomeIcon icon={faChevronLeft} />
+              <span className={styles["record-navigation__button-text"]}>Previous</span>
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                exitLinkMode();
+                onNextRecord?.();
+              }}
+              disabled={!onNextRecord || !hasNextRecord}
+              title="Next record"
+            >
+              <span className={styles["record-navigation__button-text"]}>Next</span>
+              <FontAwesomeIcon icon={faChevronRight} />
+            </Button>
+            {recordInfo && <span className={styles["annotation-nav__info"]}>{recordInfo}</span>}
           </div>
+          <Button
+            variant={isReviewed ? "success" : "primary"}
+            onClick={() => {
+              exitLinkMode();
+              onMarkReviewed?.();
+            }}
+            disabled={!onMarkReviewed}
+            title={isReviewed ? "Marked as reviewed" : "Mark as reviewed"}
+          >
+            {isReviewed ? <FontAwesomeIcon icon={faCheck} /> : null}
+            <span className={styles["record-navigation__review-text"]}>
+              {isReviewed ? "Reviewed" : "Mark as Reviewed"}
+            </span>
+          </Button>
+        </div>
+
+        {/* Condensed instructions */}
+        <div className={styles["annotation-instructions"]}>
+          {readOnly ? (
+            <>
+              <div>
+                <strong>Read-only:</strong> this record is marked as reviewed — unmark it to edit annotations.
+              </div>
+              <div>
+                <strong>Navigate:</strong> <kbd>←</kbd> / <kbd>→</kbd> previous / next record.
+              </div>
+              <div>
+                <strong>Review:</strong> <kbd>Enter</kbd> toggles the reviewed status.
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <strong>Create:</strong> select a label, then highlight text in the record.
+              </div>
+              <div>
+                <strong>Change label:</strong> click an annotation, then a label or <kbd>1</kbd>–<kbd>9</kbd>.
+              </div>
+              <div>
+                <strong>Delete:</strong> click an annotation, press <kbd>Delete</kbd>.
+              </div>
+              {labelRelations.length > 0 && (
+                <div>
+                  <strong>Link:</strong> press <kbd>L</kbd>, click two compatible terms, <kbd>Esc</kbd> confirms.
+                </div>
+              )}
+              <div>
+                <strong>Navigate:</strong> <kbd>←</kbd> / <kbd>→</kbd> previous / next record.
+              </div>
+              <div>
+                <strong>Review:</strong> <kbd>Enter</kbd> marks the record as reviewed.
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Labels row */}
+        <div className={styles["label-section"]}>
+          <span className={styles["label-section__title"]}>Labels</span>
+          {labels.map((label, index) => (
+            <button
+              key={label}
+              className={classNames(styles["label-button"], styles[`label${index + 1}`], {
+                [styles["label-button--active"]]: selectedLabel === label,
+              })}
+              onClick={() => handleLabelSelection(label)}
+              disabled={readOnly || selectedAnnotation !== null || linkMode}
+            >
+              <span className={styles["label-button__shortcut"]}>{index + 1}</span>
+              {label}
+            </button>
+          ))}
+          {labels.length === 0 && <p className={styles["label-section__empty"]}>No labels defined for this dataset.</p>}
+          {!readOnly && labelRelations.length > 0 && (
+            <Button
+              variant={linkMode ? "primary" : "outline"}
+              size="small"
+              className={styles["label-section__link-button"]}
+              onClick={() => {
+                if (linkMode) {
+                  exitLinkMode();
+                } else {
+                  setLinkMode(true);
+                  onSelectAnnotation(null);
+                }
+              }}
+              title={
+                linkMode
+                  ? "Confirm linking (Esc)"
+                  : "Link two annotations manually. Related terms are linked automatically during extraction when adjacent in the same sentence."
+              }
+            >
+              {linkMode ? "Confirm" : "Link"}
+            </Button>
+          )}
+        </div>
+        {linkMode && (
+          <div className={styles["link-mode-banner"]}>
+            {linkFromId === null
+              ? "Click a highlighted term in the text to select it"
+              : "Click a compatible term in the text to link — or click a black term to unlink"}
+          </div>
+        )}
+
+        {/* Main columns: record text + annotations */}
+        <div className={styles["annotation-main"]}>
           <div className={styles["annotation-text"]}>
             <div className={styles["annotation-text__header"]}>
               <h3 className={styles["section-title"]}>Medical Record</h3>
@@ -349,114 +436,11 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
               />
             </div>
           </div>
-        </div>
 
-        {/* Right side - Controls */}
-
-        <div className={styles["annotation-controls"]}>
-          {/* Navigation and review buttons */}
-          <div className={styles["record-navigation"]}>
-            <div className={styles["record-navigation__buttons"]}>
-              <Button
-                variant="outline"
-                onClick={() => { exitLinkMode(); onPreviousRecord?.(); }}
-                disabled={!onPreviousRecord || !hasPreviousRecord}
-                title="Previous record"
-              >
-                <FontAwesomeIcon icon={faChevronLeft} />
-                <span className={styles["record-navigation__button-text"]}>Previous</span>
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => { exitLinkMode(); onNextRecord?.(); }}
-                disabled={!onNextRecord || !hasNextRecord}
-                title="Next record"
-              >
-                <span className={styles["record-navigation__button-text"]}>Next</span>
-                <FontAwesomeIcon icon={faChevronRight} />
-              </Button>
-            </div>
-            <Button
-              variant={isReviewed ? "success" : "primary"}
-              onClick={() => { exitLinkMode(); onMarkReviewed?.(); }}
-              disabled={!onMarkReviewed}
-              title={isReviewed ? "Marked as reviewed" : "Mark as reviewed"}
-            >
-              {isReviewed ? <FontAwesomeIcon icon={faCheck} /> : null}
-              <span className={styles["record-navigation__review-text"]}>
-                {isReviewed ? "Reviewed" : "Mark as Reviewed"}
-              </span>
-            </Button>
-          </div>
-
-          {/* Instructions */}
-          <div className={styles["annotation-instructions"]}>
-            {readOnly ? (
-              <>
-                <p>
-                  <strong>Read-only mode:</strong> This record is marked as reviewed. Unmark it to edit annotations.
-                </p>
-                <p>
-                  <strong>Keyboard shortcuts:</strong>
-                </p>
-                <ul className={styles["annotation-instructions__shortcuts"]}>
-                  <li>
-                    <kbd>←</kbd> / <kbd>→</kbd> Prev / next record
-                  </li>
-                  <li>
-                    <kbd>Enter</kbd> Toggle reviewed status
-                  </li>
-                </ul>
-              </>
-            ) : (
-              <>
-                <p>
-                  <strong>Creating annotations:</strong> Select a label, then highlight text in the record.
-                </p>
-                <p>
-                  <strong>Changing labels:</strong> Click an annotation, then click a label or press <kbd>1</kbd>–<kbd>9</kbd>.
-                </p>
-                <p>
-                  <strong>Deleting:</strong> Click an annotation, then press <kbd>Delete</kbd> or <kbd>Backspace</kbd>.
-                </p>
-                {labelRelations.length > 0 && (
-                  <p>
-                    <strong>Linking:</strong> Click <em>Link</em> to enter link mode, then click a highlighted term in
-                    the text (grey border = linkable, black border = already linked). Click a compatible term to link, or click a
-                    black-bordered term to remove that link. With a term selected, press <kbd>Delete</kbd> to remove all its
-                    links at once. Press <kbd>Esc</kbd> to cancel.
-                  </p>
-                )}
-                <p>
-                  <strong>Keyboard shortcuts:</strong>
-                </p>
-                <ul className={styles["annotation-instructions__shortcuts"]}>
-                  <li>
-                    <kbd>1</kbd>–<kbd>9</kbd> Select / change label
-                  </li>
-                  <li>
-                    <kbd>Delete</kbd> Delete annotation / remove links
-                  </li>
-                  <li>
-                    <kbd>L</kbd> Toggle link mode
-                  </li>
-                  <li>
-                    <kbd>Esc</kbd> Confirm link mode
-                  </li>
-                  <li>
-                    <kbd>←</kbd> / <kbd>→</kbd> Prev / next record
-                  </li>
-                  <li>
-                    <kbd>Enter</kbd> Mark as reviewed
-                  </li>
-                </ul>
-              </>
-            )}
-          </div>
-
-          {/* Current annotations */}
           <div className={styles["annotation-section"]}>
-            <h3 className={styles["section-title"]}>Annotations ({annotations.length})</h3>
+            <div className={styles["annotation-section__header"]}>
+              <h3 className={styles["section-title"]}>Annotations ({annotations.length})</h3>
+            </div>
             {annotations.length === 0 ? (
               <p className={styles["annotation-section__empty"]}>No annotations yet. Select text to create one.</p>
             ) : (
@@ -475,7 +459,7 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
                         }
                       }}
                     >
-                      <div className={styles["annotation-item__content"]}>
+                      <div className={styles["annotation-item__row1"]}>
                         <span className={styles["annotation-item__value"]}>{annotation.value}</span>
                         <span
                           className={classNames(
@@ -485,6 +469,38 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
                         >
                           {annotation.label}
                         </span>
+                        {!linkMode && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            colorScheme="danger"
+                            className={styles["annotation-item__delete"]}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDeleteAnnotation(annotation.id);
+                            }}
+                            title="Delete annotation"
+                            disabled={readOnly}
+                          >
+                            <svg
+                              width="16"
+                              height="16"
+                              viewBox="0 0 16 16"
+                              fill="none"
+                              xmlns="http://www.w3.org/2000/svg"
+                            >
+                              <path
+                                d="M2 4H14M5.333 4V2.667C5.333 2.298 5.632 2 6 2H10C10.368 2 10.667 2.298 10.667 2.667V4M12.667 4V13.333C12.667 13.702 12.368 14 12 14H4C3.632 14 3.333 13.702 3.333 13.333V4H12.667Z"
+                                stroke="currentColor"
+                                strokeWidth="1.5"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </Button>
+                        )}
+                      </div>
+                      <div className={styles["annotation-item__row2"]}>
                         {/* Date input for selected annotation (only outside link mode) */}
                         {!linkMode && selectedAnnotation === annotation.id ? (
                           <>
@@ -548,71 +564,45 @@ const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
                               <span className={styles["annotation-item__date-id"]}>↳ linked to {dateTerm.value}</span>
                             );
                           })()}
-                        {/* Entity links */}
-                        {annotation.links && annotation.links.length > 0 && (
-                          <div className={styles["annotation-item__links"]}>
-                            {annotation.links.map((link) => {
-                              const isFrom = link.from_term_id === annotation.id;
-                              const otherValue = isFrom ? link.to_term_value : link.from_term_value;
-                              const otherLabel = isFrom ? link.to_term_label : link.from_term_label;
-                              return (
-                                <div key={link.id} className={styles["annotation-link-row"]}>
-                                  <span className={styles["annotation-link-row__direction"]}>
-                                    {isFrom ? "→" : "←"}
-                                  </span>
-                                  <span className={styles["annotation-link-row__value"]} title={otherValue}>
-                                    {otherValue}
-                                  </span>
-                                  <span
-                                    className={classNames(
-                                      styles["annotation-item__label"],
-                                      styles[getLabelColorClass(otherLabel, labels)]
-                                    )}
-                                  >
-                                    {otherLabel}
-                                  </span>
-                                  {!readOnly && !linkMode && (
-                                    <button
-                                      type="button"
-                                      className={styles["annotation-link-row__delete"]}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        onDeleteLink(link.id);
-                                      }}
-                                      title="Delete link"
-                                    >
-                                      ×
-                                    </button>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
                       </div>
-                      {!linkMode && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          colorScheme="danger"
-                          className={styles["annotation-item__delete"]}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onDeleteAnnotation(annotation.id);
-                          }}
-                          title="Delete annotation"
-                          disabled={readOnly}
-                        >
-                          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <path
-                              d="M2 4H14M5.333 4V2.667C5.333 2.298 5.632 2 6 2H10C10.368 2 10.667 2.298 10.667 2.667V4M12.667 4V13.333C12.667 13.702 12.368 14 12 14H4C3.632 14 3.333 13.702 3.333 13.333V4H12.667Z"
-                              stroke="currentColor"
-                              strokeWidth="1.5"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                          </svg>
-                        </Button>
+                      {/* Entity links */}
+                      {annotation.links && annotation.links.length > 0 && (
+                        <div className={styles["annotation-item__links"]}>
+                          {annotation.links.map((link) => {
+                            const isFrom = link.from_term_id === annotation.id;
+                            const otherValue = isFrom ? link.to_term_value : link.from_term_value;
+                            const otherLabel = isFrom ? link.to_term_label : link.from_term_label;
+                            return (
+                              <div key={link.id} className={styles["annotation-link-row"]}>
+                                <span className={styles["annotation-link-row__direction"]}>{isFrom ? "→" : "←"}</span>
+                                <span className={styles["annotation-link-row__value"]} title={otherValue}>
+                                  {otherValue}
+                                </span>
+                                <span
+                                  className={classNames(
+                                    styles["annotation-item__label"],
+                                    styles[getLabelColorClass(otherLabel, labels)]
+                                  )}
+                                >
+                                  {otherLabel}
+                                </span>
+                                {!readOnly && !linkMode && (
+                                  <button
+                                    type="button"
+                                    className={styles["annotation-link-row__delete"]}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onDeleteLink(link.id);
+                                    }}
+                                    title="Delete link"
+                                  >
+                                    ×
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
                       )}
                     </div>
                   );

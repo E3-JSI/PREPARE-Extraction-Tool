@@ -31,11 +31,9 @@ export async function cancelDatasetExtraction(datasetId: number, jobId: string):
   return apiRequest<MessageOutput>(`/bioner/${datasetId}/records/extract/${jobId}/cancel`, { method: "POST" });
 }
 
-export async function getActiveExtractionJob(
-  datasetId: number
-): Promise<ExtractionJobStatusResponse | null> {
-  const result = await apiRequest<ExtractionJobStatusResponse | null>(
-    `/bioner/${datasetId}/records/extract/active`
-  );
-  return result ?? null;
+export async function getActiveExtractionJob(datasetId: number): Promise<ExtractionJobStatusResponse | null> {
+  const result = await apiRequest<ExtractionJobStatusResponse | null>(`/bioner/${datasetId}/records/extract/active`);
+  // apiRequest returns {} for an empty 200 body, so normalize the "no active job"
+  // case (null, undefined, or an empty/jobless object) to null.
+  return result?.job_id ? result : null;
 }

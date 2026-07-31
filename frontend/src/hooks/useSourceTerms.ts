@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import type { SourceTerm, SourceTermCreate } from "@/types";
+import type { SourceTerm, SourceTermCreate, SourceTermUpdate } from "@/types";
 import {
   createSourceTerm as createSourceTermAPI,
   deleteSourceTerm as deleteSourceTermAPI,
@@ -31,11 +31,15 @@ export function useSourceTerms({
       }
       const response = await createSourceTermAPI(datasetId, selectedRecordId, term);
       // After creating, re-fetch all source terms to get backend-calculated fields (like linked dates)
-      const refreshed = await import("@/api/sourceTerms").then(m => m.getRecordSourceTerms(datasetId, selectedRecordId, 500));
+      const refreshed = await getRecordSourceTerms(datasetId, selectedRecordId, 500);
       setSelectedRecordTerms(refreshed.source_terms);
       await fetchStats();
       // Optionally, return the new term (find by value/label)
-      return refreshed.source_terms.find(t => t.value === response.source_term.value && t.label === response.source_term.label) ?? response.source_term;
+      return (
+        refreshed.source_terms.find(
+          (t) => t.value === response.source_term.value && t.label === response.source_term.label
+        ) ?? response.source_term
+      );
     },
     [datasetId, selectedRecordId, setSelectedRecordTerms, fetchStats]
   );
@@ -45,7 +49,7 @@ export function useSourceTerms({
       await deleteSourceTermAPI(termId);
       // After deleting, re-fetch all source terms to get backend-calculated fields (like linked dates)
       if (selectedRecordId) {
-        const refreshed = await import("@/api/sourceTerms").then(m => m.getRecordSourceTerms(datasetId, selectedRecordId, 500));
+        const refreshed = await getRecordSourceTerms(datasetId, selectedRecordId, 500);
         setSelectedRecordTerms(refreshed.source_terms);
       } else {
         setSelectedRecordTerms((prev) => prev.filter((t) => t.id !== termId));
@@ -70,7 +74,7 @@ export function useSourceTerms({
   const updateSourceTermDate = useCallback(
     async (termId: number, newDate: string | null) => {
       // Send null to clear date, or YYYY-MM-DD string to set
-      const payload = { linked_visit_date: newDate } as any;
+      const payload: SourceTermUpdate = { linked_visit_date: newDate };
       const response = await updateSourceTermAPI(termId, payload);
       // Preserve existing links since the PATCH response doesn't include them
       setSelectedRecordTerms((prev) =>
