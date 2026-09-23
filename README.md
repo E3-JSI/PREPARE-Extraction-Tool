@@ -6,6 +6,20 @@ PREPARE Extraction Tool is an application to help create mappings between coding
 The tool is an adaptation/extension of the OHDSI Usagi tool, focusing on extracting relevant medical terms
 from unstructured text and mapping them to the OHDSI vocabularies available on OHDSI Athena.
 
+## Demo
+
+<p align="center">
+  <a href="https://youtu.be/dATlJwETnsE">
+    <img src="https://img.youtube.com/vi/dATlJwETnsE/maxresdefault.jpg" alt="PREPARE Extraction Tool demo video" width="600"/>
+  </a>
+</p>
+
+<p align="center"><a href="https://youtu.be/dATlJwETnsE">Watch the walkthrough on YouTube</a></p>
+
+<p align="center">
+  <a href="docs/assets/PREPARE-Extraction-Tool%20User%20Manual.pdf">Read the User Manual (PDF)</a>
+</p>
+
 ## Running the Tool
 
 ### Prerequisites
