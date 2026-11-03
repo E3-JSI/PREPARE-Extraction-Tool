@@ -114,3 +114,39 @@ def stop_training(run_id: int):
     response.raise_for_status()
 
     return response.json()
+
+
+class InvalidNERResponse(ValueError):
+    """A response from bioner is not compatible with the service contract."""
+def extract_with_relations(
+    text: str, labels: list[str] | dict[str, str],
+    label_relations: list[dict], date_label: Optional[str] = None,
+    existing_entities: Optional[list[dict]] = None,
+) -> dict:
+    """Single remote NER pass plus full clinical processing inside bioner."""
+    payload = {
+        "medical_text": text,
+        "labels": labels,
+        "label_relations": label_relations,
+        "include_relations": True,
+        "date_label": date_label,
+        "existing_entities": existing_entities or [],
+    }
+    response = requests.post(f"{settings.EXTRACT_HOST}/ner", json=payload, timeout=300)
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict) or not isinstance(data.get("entities"), list) or not isinstance(data.get("relations"), list):
+        raise InvalidNERResponse("BioNER did not return entities and relations; deploy the updated bioner first")
+    ids = set()
+    for entity in data["entities"]:
+        if not isinstance(entity, dict) or not all(key in entity for key in ("id", "text", "label", "start", "end")):
+            raise InvalidNERResponse("Malformed BioNER clinical entity")
+        if not isinstance(entity["start"], int) or not isinstance(entity["end"], int) or not (0 <= entity["start"] < entity["end"] <= len(text)):
+            raise InvalidNERResponse("Invalid entity offsets")
+        if entity["id"] in ids:
+            raise InvalidNERResponse("Duplicate BioNER entity ID")
+        ids.add(entity["id"])
+    for relation in data["relations"]:
+        if not isinstance(relation, dict) or relation.get("head") not in ids or relation.get("tail") not in ids:
+            raise InvalidNERResponse("Invalid BioNER relation endpoint")
+    return data

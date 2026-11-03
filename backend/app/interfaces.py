@@ -1,5 +1,5 @@
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # =====================================
 # Data types
@@ -26,26 +26,3 @@ class NERRequest(BaseModel):
 
 class LabelsInput(BaseModel):
     labels: List[str] | None = None
-
-
-
-# =====================================
-# Clinical processing data contracts
-# =====================================
-
-class Token(BaseModel):
-    """Token span with offsets relative to the original record text."""
-
-    text: str
-    norm: str
-    start: int = Field(ge=0)
-    end: int = Field(ge=0)
-
-
-class SentenceSpan(BaseModel):
-    """Sentence character and token offsets."""
-
-    start: int = Field(ge=0)
-    end: int = Field(ge=0)
-    token_start: int = Field(ge=0)
-    token_end: int = Field(ge=0)
