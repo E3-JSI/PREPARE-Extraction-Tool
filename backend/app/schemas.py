@@ -834,6 +834,26 @@ class TrainingRunSummary(BaseModel):
     preferred: bool = False
 
 
+class LearningCurvePoint(BaseModel):
+    """One completed training run included in a learning curve."""
+
+    run_id: int
+    model_id: int
+    name: Optional[str] = None
+    num_train_documents: int
+    macro_f1: float
+    created_at: Optional[datetime] = None
+
+
+class LearningCurveResponse(BaseModel):
+    """Comparable runs for one base model and validation set."""
+
+    base_model: str
+    validation_set_id: int
+    labels: List[str] = Field(default_factory=list)
+    points: List[LearningCurvePoint] = Field(default_factory=list)
+
+
 class TrainingRunUpdate(BaseModel):
     """Partial update for a training run (rename / designate as preferred)."""
 

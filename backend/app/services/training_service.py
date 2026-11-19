@@ -9,16 +9,100 @@ from sqlmodel import Session, func, select
 
 from app.models_db import (
     AppSettings,
+    Dataset,
     Evaluation,
     ExtractionJob,
     LiveEvalJob,
     Model,
     ModelTrainRecordLink,
+    Record,
     TrainingMetric,
     TrainingRun,
     TrainingRunDatasetLink,
+    ValidationSet,
+    ValidationSetRecordLink,
 )
 from app.services import bioner_client, evaluation_service
+
+
+def get_validation_set(
+    db: Session, user_id: int, base_model: str
+) -> Optional[ValidationSet]:
+    """Find the saved validation set for this user and base model."""
+    return db.exec(
+        select(ValidationSet)
+        .where(ValidationSet.user_id == user_id)
+        .where(ValidationSet.base_model == base_model.strip())
+    ).first()
+
+
+def create_validation_set(
+    db: Session,
+    *,
+    user_id: int,
+    base_model: str,
+    record_ids: List[int],
+) -> ValidationSet:
+    """Persist a nonempty validation set from already-cleaned documents."""
+    base_model = base_model.strip()
+    unique_record_ids = sorted(set(record_ids))
+
+    if not base_model:
+        raise ValueError("A base model is required.")
+
+    if not unique_record_ids:
+        raise ValueError(
+            "A validation set must contain at least one document."
+        )
+
+    if get_validation_set(db, user_id, base_model) is not None:
+        raise ValueError(
+            "A validation set already exists for this base model. "
+            "Reuse the saved set."
+        )
+
+    eligible_ids = set(
+        db.exec(
+            select(Record.id)
+            .join(Dataset, Record.dataset_id == Dataset.id)
+            .where(Record.id.in_(unique_record_ids))
+            .where(Record.reviewed == True)  # noqa: E712
+            .where(Dataset.user_id == user_id)
+        ).all()
+    )
+
+    if eligible_ids != set(unique_record_ids):
+        raise ValueError(
+            "Validation records must exist, be reviewed, "
+            "and belong to the current user."
+        )
+
+    validation_set = ValidationSet(
+        user_id=user_id,
+        base_model=base_model,
+    )
+
+    try:
+        db.add(validation_set)
+        db.flush()
+
+        for record_id in unique_record_ids:
+            db.add(
+                ValidationSetRecordLink(
+                    validation_set_id=validation_set.id,
+                    record_id=record_id,
+                )
+            )
+
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError(
+            "Could not save the validation set. Refresh and try again."
+        ) from exc
+
+    db.refresh(validation_set)
+    return validation_set
 
 
 def create_run(
@@ -95,6 +179,125 @@ def get_dataset_ids(db: Session, run_id: int, role: str = "train") -> List[int]:
             .where(TrainingRunDatasetLink.role == role)
         ).all()
     )
+
+
+def save_training_assignment(
+    db: Session,
+    *,
+    run_id: int,
+    train_record_ids: List[int],
+    validation_set_id: Optional[int] = None,
+) -> Model:
+    """Save document membership before starting the trainer."""
+    run = db.exec(
+        select(TrainingRun)
+        .where(TrainingRun.id == run_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+
+    if run is None:
+        raise ValueError("Training run not found.")
+
+    if run.status != "pending" or run.model_id is not None:
+        raise ValueError(
+            "Training data can only be assigned once, before training."
+        )
+
+    unique_train_ids = sorted(set(train_record_ids))
+    if not unique_train_ids:
+        raise ValueError("At least one training document is required.")
+
+    dataset = db.get(Dataset, run.dataset_id)
+    if dataset is None:
+        raise ValueError("Training dataset not found.")
+
+    train_dataset_ids = (
+        get_dataset_ids(db, run_id, role="train") or [run.dataset_id]
+    )
+    eligible_ids = set(
+        db.exec(
+            select(Record.id)
+            .join(Dataset, Record.dataset_id == Dataset.id)
+            .where(Record.id.in_(unique_train_ids))
+            .where(Record.dataset_id.in_(train_dataset_ids))
+            .where(Record.reviewed == True)  # noqa: E712
+            .where(Dataset.user_id == dataset.user_id)
+        ).all()
+    )
+
+    if eligible_ids != set(unique_train_ids):
+        raise ValueError(
+            "Training records must be reviewed documents from this user's "
+            "selected training datasets."
+        )
+
+    validation_set = get_validation_set(
+        db, dataset.user_id, run.base_model
+    )
+    expected_validation_set_id = (
+        validation_set.id if validation_set is not None else None
+    )
+
+    if validation_set_id != expected_validation_set_id:
+        raise ValueError(
+            "The validation set must match the saved set "
+            "for this user and base model."
+        )
+
+    if validation_set_id is not None:
+        validation_ids = set(
+            db.exec(
+                select(ValidationSetRecordLink.record_id).where(
+                    ValidationSetRecordLink.validation_set_id
+                    == validation_set_id
+                )
+            ).all()
+        )
+
+        if not validation_ids:
+            raise ValueError("The validation set is empty.")
+
+        if validation_ids.intersection(unique_train_ids):
+            raise ValueError(
+                "Training and validation documents must not overlap."
+            )
+
+    model = Model(
+        name=f"run-{run.id}",
+        version=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
+        base_model=run.base_model,
+        dataset_id=run.dataset_id,
+        source="trained",
+        engine="gliner",
+        validation_set_id=validation_set_id,
+    )
+
+    try:
+        db.add(model)
+        db.flush()
+
+        db.add_all(
+            [
+                ModelTrainRecordLink(
+                    model_id=model.id,
+                    record_id=record_id,
+                )
+                for record_id in unique_train_ids
+            ]
+        )
+
+        run.model_id = model.id
+        db.add(run)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError(
+            "Could not save the training document assignment."
+        ) from exc
+
+    db.refresh(model)
+    return model
 
 
 def mark_running(db: Session, run_id: int) -> None:
@@ -316,28 +519,48 @@ def record_evaluation(
 
 
 def complete_run(
-    db: Session, run_id: int, output_path: str, record_ids: List[int]
+    db: Session, run_id: int, output_path: str
 ) -> Optional[Model]:
-    """Finalize a successful run: set artifact path, link training records, mark completed.
+    """Save the model artifact path and mark the run as completed."""
+    run = db.exec(
+        select(TrainingRun)
+        .where(TrainingRun.id == run_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
 
-    Args:
-        db (Session): Active DB session.
-        run_id (int): ID of the TrainingRun to complete.
-        output_path (str): Filesystem path to the saved model artifact.
-        record_ids (List[int]): Record IDs used during training.
-
-    Returns:
-        Optional[Model]: The finalized Model, or None if the run was not found.
-    """
-    run = db.get(TrainingRun, run_id)
     if run is None:
         return None
-    model = _ensure_model(db, run)
+
+    if run.status in {"stopped", "failed"}:
+        return None
+
+    if run.model_id is None:
+        raise ValueError(
+            "Training data must be assigned before completing the run."
+        )
+
+    model = db.get(Model, run.model_id)
+    if model is None:
+        raise ValueError(
+            "The model assigned to this training run was not found."
+        )
+
+    training_record = db.exec(
+        select(ModelTrainRecordLink)
+        .where(ModelTrainRecordLink.model_id == model.id)
+        .limit(1)
+    ).first()
+
+    if training_record is None:
+        raise ValueError(
+            "Training records must be saved before completing the run."
+        )
+
     model.path = output_path
-    db.add(model)
-    for record_id in record_ids:
-        db.add(ModelTrainRecordLink(model_id=model.id, record_id=record_id))
     run.status = "completed"
+
+    db.add(model)
     db.add(run)
     db.commit()
     db.refresh(model)
@@ -345,16 +568,21 @@ def complete_run(
 
 
 def fail_run(db: Session, run_id: int, message: str) -> None:
-    """Mark a run failed with an error message.
-
-    Args:
-        db (Session): Active DB session.
-        run_id (int): ID of the TrainingRun to fail.
-        message (str): Human-readable error description.
-    """
+    """Mark a run failed and remove its training record links."""
     run = db.get(TrainingRun, run_id)
-    if run is None:
+    if run is None or run.status == "completed":
         return
+
+    if run.model_id is not None:
+        train_links = db.exec(
+            select(ModelTrainRecordLink).where(
+                ModelTrainRecordLink.model_id == run.model_id
+            )
+        ).all()
+
+        for link in train_links:
+            db.delete(link)
+
     run.status = "failed"
     run.error_message = message
     db.add(run)
@@ -362,15 +590,27 @@ def fail_run(db: Session, run_id: int, message: str) -> None:
 
 
 def stop_run(db: Session, run_id: int) -> None:
-    """Mark a run stopped.
+    """Mark a run stopped and remove its training record links."""
+    run = db.exec(
+        select(TrainingRun)
+        .where(TrainingRun.id == run_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
 
-    Args:
-        db (Session): Active DB session.
-        run_id (int): ID of the TrainingRun to stop.
-    """
-    run = db.get(TrainingRun, run_id)
-    if run is None:
+    if run is None or run.status in {"completed", "failed"}:
         return
+
+    if run.model_id is not None:
+        train_links = db.exec(
+            select(ModelTrainRecordLink).where(
+                ModelTrainRecordLink.model_id == run.model_id
+            )
+        ).all()
+
+        for link in train_links:
+            db.delete(link)
+
     run.status = "stopped"
     db.add(run)
     db.commit()

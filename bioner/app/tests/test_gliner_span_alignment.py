@@ -15,11 +15,17 @@ Locks in two fixes:
 
 from app.core.settings import settings
 from app.training.gliner_trainer import GLiNERFinetuner, _window_example
+import app.training.gliner_trainer as trainer_module
 
 
 def _finetuner() -> GLiNERFinetuner:
     # Construction does not load a model, so a dummy path is fine.
-    return GLiNERFinetuner(run_id=1, base_model_path="x", training_data=[])
+    return GLiNERFinetuner(
+        run_id=1,
+        base_model_path="x",
+        labels=["SYMPTOM"],
+        training_data=[],
+    )
 
 
 def test_clean_items_keeps_inclusive_token_spans():
@@ -150,3 +156,112 @@ def test_window_enforces_hard_cap():
     assert out, "expected at least one window"
     for win in out:
         assert len(win["tokenized_text"]) <= 16
+
+
+def test_clean_items_keeps_negative_example_and_record_id():
+    tokens = ["No", "entities", "here"]
+    item = {
+        "record_id": 42,
+        "tokenized_text": tokens,
+        "ner": [],
+    }
+
+    cleaned = _finetuner()._clean_items([item])
+
+    assert cleaned == [
+        {
+            "text": "No entities here",
+            "tokenized_text": tokens,
+            "ner": [],
+            "ner_char": [],
+            "record_id": 42,
+        }
+    ]
+
+
+def test_window_splits_long_negative_example():
+    tokens = ["x"] * 10
+    item = {
+        "record_id": 42,
+        "text": " ".join(tokens),
+        "tokenized_text": tokens,
+        "ner": [],
+        "ner_char": [],
+    }
+
+    windows = _window_example(item, max_tokens=4, pad=1)
+
+    assert [len(window["tokenized_text"]) for window in windows] == [4, 4, 2]
+    assert all(window["ner"] == [] for window in windows)
+    assert all(window["record_id"] == 42 for window in windows)
+
+
+def test_window_skips_entity_wider_than_limit():
+    tokens = ["x"] * 5
+    item = {
+        "record_id": 42,
+        "text": " ".join(tokens),
+        "tokenized_text": tokens,
+        "ner": [[0, 4, "SYMPTOM"]],
+        "ner_char": [[0, len(" ".join(tokens)), "SYMPTOM"]],
+    }
+
+    assert _window_example(item, max_tokens=4, pad=1) == []
+
+
+def test_collator_adds_labels_only_to_negative_examples(
+    monkeypatch,
+    tmp_path,
+):
+    class FakeSpanDataCollator:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, items):
+            return items
+
+    class FakeModel:
+        config = object()
+        data_processor = object()
+
+    monkeypatch.setattr(
+        trainer_module,
+        "SpanDataCollator",
+        FakeSpanDataCollator,
+    )
+    monkeypatch.setattr(
+        trainer_module,
+        "TrainingArguments",
+        lambda **kwargs: kwargs,
+    )
+    monkeypatch.chdir(tmp_path)
+
+    negative = {
+        "text": "No finding",
+        "tokenized_text": ["No", "finding"],
+        "ner": [],
+        "ner_char": [],
+    }
+    positive = {
+        "text": "fever",
+        "tokenized_text": ["fever"],
+        "ner": [[0, 0, "SYMPTOM"]],
+        "ner_char": [[0, 5, "SYMPTOM"]],
+    }
+
+    finetuner = _finetuner()
+    _, _, collator, _, labels, _ = (
+        finetuner._build_training_components(
+            model=FakeModel(),
+            cleaned_data=[negative, positive],
+            train_data=[negative, positive],
+            val_data=[],
+        )
+    )
+
+    prepared_items = collator([negative, positive])
+
+    assert labels == ["SYMPTOM"]
+    assert prepared_items[0]["ner_labels"] == ["SYMPTOM"]
+    assert "ner_labels" not in prepared_items[1]
+    assert "ner_labels" not in negative

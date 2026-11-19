@@ -687,6 +687,127 @@ def test_model_detail_404_for_unknown_model(client):
     assert resp.status_code == 404
 
 
+def test_model_learning_curve_returns_sorted_comparable_runs(client):
+    """Return completed runs with the same validation set, base model and labels."""
+    from app.models_db import (
+        Dataset,
+        Evaluation,
+        Model,
+        TrainingRun,
+        ValidationSet,
+    )
+
+    db = client.session
+    dataset = db.get(Dataset, client.dataset_id)
+
+    validation_set = ValidationSet(
+        user_id=dataset.user_id,
+        base_model="/models/base-model",
+    )
+    db.add(validation_set)
+    db.commit()
+    db.refresh(validation_set)
+
+    def add_run(*, name, train_size, labels, status, scores):
+        model = Model(
+            name=name,
+            version="1",
+            base_model="/models/base-model",
+            path=f"/models/{name}",
+            dataset_id=client.dataset_id,
+            validation_set_id=validation_set.id,
+        )
+        db.add(model)
+        db.flush()
+
+        run = TrainingRun(
+            dataset_id=client.dataset_id,
+            name=name,
+            base_model="/models/base-model",
+            labels=labels,
+            val_ratio=0.1,
+            status=status,
+            model_id=model.id,
+            train_stats={"train_size": train_size},
+        )
+        db.add(run)
+        db.flush()
+
+        for label, exact_f1 in scores.items():
+            db.add(
+                Evaluation(
+                    label=label,
+                    score={"exact_f1": exact_f1},
+                    dataset_id=client.dataset_id,
+                    model_id=model.id,
+                )
+            )
+
+        db.commit()
+        return model, run
+
+    _, small_run = add_run(
+        name="small",
+        train_size=10,
+        labels=["Disease", "Drug"],
+        status="completed",
+        scores={"Drug": 0.0, "Disease": 0.0},
+    )
+
+    target_model, target_run = add_run(
+        name="target",
+        train_size=30,
+        labels=["Drug", "Disease"],
+        status="completed",
+        scores={"Drug": 0.8, "Disease": 0.6},
+    )
+
+    add_run(
+        name="different-labels",
+        train_size=20,
+        labels=["Drug"],
+        status="completed",
+        scores={"Drug": 0.99},
+    )
+
+    add_run(
+        name="unfinished",
+        train_size=40,
+        labels=["Drug", "Disease"],
+        status="pending",
+        scores={"Drug": 0.99, "Disease": 0.99},
+    )
+
+    target_model_id = target_model.id
+    validation_set_id = validation_set.id
+    small_run_id = small_run.id
+    target_run_id = target_run.id
+    db.expire_all()
+
+    response = client.get(
+        f"/api/v1/bioner/models/{target_model_id}/learning-curve"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["base_model"] == "/models/base-model"
+    assert body["validation_set_id"] == validation_set_id
+    assert body["labels"] == ["Drug", "Disease"]
+
+    assert [
+        (point["run_id"], point["num_train_documents"])
+        for point in body["points"]
+    ] == [
+        (small_run_id, 10),
+        (target_run_id, 30),
+    ]
+
+    assert body["points"][0]["macro_f1"] == pytest.approx(0.0)
+    assert body["points"][1]["macro_f1"] == pytest.approx(0.7)
+
+
+
 # ================================================
 # Task 9: step-indexed train/eval metrics + total_steps
 # ================================================

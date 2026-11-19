@@ -156,112 +156,156 @@ def _token_char_starts(tokens: list[str]) -> list[int]:
     return starts
 
 
-def _window_example(item: dict, max_tokens: int, pad: int) -> list[dict]:
-    """Split a cleaned token-form item into bounded, span-centred windows.
-
-    Long records blow up GLiNER's ``seq_len x span_width x num_classes`` score
-    tensor and make the first CPU step crawl. This trims each example to windows
-    of at most ``max_tokens`` tokens centred on its span groups: co-occurring
-    spans that fit within the budget are greedily packed into ONE window (so a
-    record like "the patient has a cold and a headache" stays a single two-span
-    example), and only spans too far apart to share a window spill into additional
-    windows.
-
-    Works in token space on the corrected inclusive spans, then recomputes both
-    the token ``ner`` (offset by the window start) and the character ``ner_char``
-    (from the windowed tokens via :func:`_token_char_starts`) so realignment is
-    exact.
-
-    Args:
-        item (dict): A cleaned item with ``tokenized_text``, inclusive token
-            spans in ``ner`` and character spans in ``ner_char``.
-        max_tokens (int): Hard cap on tokens per window; no emitted window ever
-            exceeds this.
-        pad (int): Context tokens kept on each side of a span group.
-
-    Returns:
-        list[dict]: One or more windowed items with realigned spans. Returns the
-            input unchanged (single-item list) when it already fits within
-            ``max_tokens``. A span wider than ``max_tokens`` on its own is dropped
-            (logged) rather than shipped oversized.
-    """
+def _window_example(
+    item: dict,
+    max_tokens: int,
+    pad: int,
+) -> list[dict]:
+    """Split one document into bounded token windows without dropping it."""
     tokens = item["tokenized_text"]
     ner = item["ner"]
 
-    if len(tokens) <= max_tokens or not ner:
+    if max_tokens < 1:
+        raise ValueError(
+            "BIONER_TRAIN_MAX_TOKENS must be at least 1."
+        )
+
+    if len(tokens) <= max_tokens:
         return [item]
 
-    last_idx = len(tokens) - 1
+    record_id = item.get("record_id")
 
-    # Greedily pack spans (in start order) into groups whose padded extent fits
-    # the budget. A span only opens a new group when it cannot share the current
-    # one — never one-window-per-span while they could co-occur.
-    spans = sorted(ner, key=lambda s: (s[0], s[1]))
+    # Negative documents have no entity-centred window. Keep their complete
+    # content by splitting it into consecutive bounded windows.
+    if not ner:
+        windows: list[dict] = []
+
+        for win_start in range(0, len(tokens), max_tokens):
+            win_tokens = tokens[
+                win_start : win_start + max_tokens
+            ]
+            window = {
+                "text": " ".join(win_tokens),
+                "tokenized_text": win_tokens,
+                "ner": [],
+                "ner_char": [],
+            }
+
+            if record_id is not None:
+                window["record_id"] = record_id
+
+            windows.append(window)
+
+        return windows
+
+    last_idx = len(tokens) - 1
+    spans = sorted(
+        ner,
+        key=lambda span: (span[0], span[1]),
+    )
+
+    for start, end, label in spans:
+        if end - start + 1 > max_tokens:
+            logger.warning(
+                "Skipping record %s because entity span [%s, %s] (%s) "
+                "is wider than max_tokens=%s.",
+                record_id,
+                start,
+                end,
+                label,
+                max_tokens,
+            )
+            return []
+
     groups: list[list[list]] = []
     current: list[list] = []
-    cur_min = cur_max = 0
+    current_min = current_max = 0
+
     for span in spans:
         start, end, _ = span
+
         if not current:
             current = [span]
-            cur_min, cur_max = start, end
+            current_min, current_max = start, end
             continue
-        new_min = min(cur_min, start)
-        new_max = max(cur_max, end)
-        win_start = max(0, new_min - pad)
-        win_end = min(last_idx, new_max + pad)
-        if win_end - win_start + 1 <= max_tokens:
+
+        new_min = min(current_min, start)
+        new_max = max(current_max, end)
+        padded_start = max(0, new_min - pad)
+        padded_end = min(last_idx, new_max + pad)
+
+        if padded_end - padded_start + 1 <= max_tokens:
             current.append(span)
-            cur_min, cur_max = new_min, new_max
+            current_min, current_max = new_min, new_max
         else:
             groups.append(current)
             current = [span]
-            cur_min, cur_max = start, end
+            current_min, current_max = start, end
+
     if current:
         groups.append(current)
 
     windows: list[dict] = []
+
     for group in groups:
-        g_min = min(s[0] for s in group)
-        g_max = max(s[1] for s in group)
-        win_start = max(0, g_min - pad)
-        win_end = min(last_idx, g_max + pad)
-        # Hard cap: only reachable when a single span's own extent exceeds the
-        # budget; clamp the window and drop spans that fall outside it below.
-        if win_end - win_start + 1 > max_tokens:
-            win_end = min(last_idx, win_start + max_tokens - 1)
+        group_min = min(span[0] for span in group)
+        group_max = max(span[1] for span in group)
+        group_width = group_max - group_min + 1
+        context_budget = max_tokens - group_width
+
+        left_context = min(
+            max(pad, 0),
+            context_budget // 2,
+        )
+        right_context = min(
+            max(pad, 0),
+            context_budget - left_context,
+        )
+
+        win_start = max(0, group_min - left_context)
+        win_end = min(last_idx, group_max + right_context)
 
         win_tokens = tokens[win_start : win_end + 1]
         char_starts = _token_char_starts(win_tokens)
 
         win_ner: list[list] = []
         win_ner_char: list[list] = []
+
         for start, end, label in group:
             if start < win_start or end > win_end:
-                logger.warning(
-                    "Dropping span [%d, %d] (%s): wider than max_tokens=%d",
-                    start,
-                    end,
-                    label,
-                    max_tokens,
+                raise ValueError(
+                    f"Could not preserve entity span "
+                    f"[{start}, {end}] ({label}) "
+                    f"in record {record_id}."
                 )
-                continue
-            rel_start = start - win_start
-            rel_end = end - win_start
-            win_ner.append([rel_start, rel_end, label])
-            char_start = char_starts[rel_start]
-            char_end = char_starts[rel_end] + len(win_tokens[rel_end])
-            win_ner_char.append([char_start, char_end, label])
 
-        if win_ner:
-            windows.append(
-                {
-                    "text": " ".join(win_tokens),
-                    "tokenized_text": win_tokens,
-                    "ner": win_ner,
-                    "ner_char": win_ner_char,
-                }
+            relative_start = start - win_start
+            relative_end = end - win_start
+
+            win_ner.append(
+                [relative_start, relative_end, label]
             )
+
+            char_start = char_starts[relative_start]
+            char_end = (
+                char_starts[relative_end]
+                + len(win_tokens[relative_end])
+            )
+            win_ner_char.append(
+                [char_start, char_end, label]
+            )
+
+        window = {
+            "text": " ".join(win_tokens),
+            "tokenized_text": win_tokens,
+            "ner": win_ner,
+            "ner_char": win_ner_char,
+        }
+
+        if record_id is not None:
+            window["record_id"] = record_id
+
+        windows.append(window)
 
     return windows
 
@@ -323,6 +367,7 @@ class GLiNERFinetuner:
         self,
         run_id: int,
         base_model_path: str,
+        labels: list[str],
         training_data: list[dict],
         eval_data: Optional[list[dict]] = None,
         device: str = "cpu",
@@ -333,6 +378,11 @@ class GLiNERFinetuner:
     ):
         self.run_id = run_id
         self.base_model_path = base_model_path
+        self.labels = list(
+            dict.fromkeys(label.strip() for label in labels if label.strip())
+        )
+        if not self.labels:
+            raise ValueError("At least one training label is required.")
         self.training_data = training_data
         self.eval_data = eval_data or []
 
@@ -490,8 +540,8 @@ class GLiNERFinetuner:
         ``{"text": ..., "entities": [...]}``. Token-form items keep their
         ``tokenized_text`` plus character spans in ``ner_char`` (used by eval and
         serialized samples, which slice ``text[start:end]``); ``ner`` stays as
-        token spans for the GLiNER collator. Items that yield no valid spans are
-        dropped.
+        token spans for the GLiNER collator. Items with no entities are retained 
+        as negative examples. Malformed items are dropped.
 
         Args:
             data (list[dict]): Raw training or evaluation items.
@@ -504,6 +554,7 @@ class GLiNERFinetuner:
         for item in data:
             # Check if data is already in GLiNER token format from backend
             if "tokenized_text" in item and "ner" in item:
+                record_id = item.get("record_id")
                 tokenized_text = item.get("tokenized_text", [])
                 ner = item.get("ner", [])
 
@@ -513,65 +564,73 @@ class GLiNERFinetuner:
                 if not isinstance(ner, list):
                     continue
 
-                # Reconstruct text by joining tokens with spaces
-                tokens = [str(t) for t in tokenized_text]
+                tokens = [str(token) for token in tokenized_text]
                 text = " ".join(tokens)
 
                 if not text.strip():
                     continue
 
-                # Char start offset of each token in the joined `text`
-                # (tokens are joined by single spaces).
                 token_char_starts = _token_char_starts(tokens)
 
-                # Validate NER entries (token indices should be in range).
-                # `ner` stays as INCLUSIVE TOKEN spans into `tokenized_text` —
-                # that is what GLiNER's collator consumes. GLiNER 0.2.x builds
-                # candidate spans as ``(start, start + width)`` with ``width``
-                # starting at 0, so a single-token entity at token ``i`` is the
-                # inclusive span ``(i, i)`` and the gold lookup is an exact tuple
-                # match. Keeping the end token as-is (no ``+ 1``) is what makes the
-                # target line up; a ``+ 1`` trains the model one token too wide and
-                # silently drops any entity ending on the last token. Everything
-                # that slices ``text[start:end]`` (eval, serialized samples) must
-                # use the CHARACTER spans kept in `ner_char` instead.
                 valid_ner = []
                 valid_ner_char = []
-                for ent in ner:
-                    if isinstance(ent, (list, tuple)) and len(ent) == 3:
-                        start_tok, end_tok, label = ent
-                        if (
-                            isinstance(start_tok, int)
-                            and isinstance(end_tok, int)
-                            and isinstance(label, str)
-                        ):
-                            # Token indices are already correct, just validate bounds
-                            if 0 <= start_tok <= end_tok < len(tokenized_text):
-                                valid_ner.append([start_tok, end_tok, label])
-                                char_start = token_char_starts[start_tok]
-                                char_end = token_char_starts[end_tok] + len(
-                                    tokens[end_tok]
-                                )
-                                valid_ner_char.append([char_start, char_end, label])
+                valid_item = True
 
-                if valid_ner:
-                    cleaned_item = {
-                        "text": text,
-                        "tokenized_text": tokens,
-                        "ner": valid_ner,
-                        "ner_char": valid_ner_char,
-                    }
-                    # TODO(structural-chunking): tier-1 sentence/section split
-                    # (syntok/medspacy) before the span-window fallback —
-                    # rule-based segmenters are weak on messy bulleted clinical
-                    # text, so span-window is the robust default we ship first.
-                    cleaned_data.extend(
-                        _window_example(
-                            cleaned_item,
-                            settings.BIONER_TRAIN_MAX_TOKENS,
-                            settings.BIONER_TRAIN_CONTEXT_PAD,
-                        )
+                for ent in ner:
+                    if not (
+                        isinstance(ent, (list, tuple))
+                        and len(ent) == 3
+                    ):
+                        valid_item = False
+                        break
+
+                    start_tok, end_tok, label = ent
+
+                    if not (
+                        isinstance(start_tok, int)
+                        and isinstance(end_tok, int)
+                        and isinstance(label, str)
+                        and label.strip()
+                        and 0 <= start_tok <= end_tok < len(tokens)
+                    ):
+                        valid_item = False
+                        break
+
+                    valid_ner.append([start_tok, end_tok, label])
+
+                    char_start = token_char_starts[start_tok]
+                    char_end = (
+                        token_char_starts[end_tok]
+                        + len(tokens[end_tok])
                     )
+                    valid_ner_char.append(
+                        [char_start, char_end, label]
+                    )
+
+                if not valid_item:
+                    logger.warning(
+                        "Skipping record %s because it contains invalid NER data.",
+                        record_id,
+                    )
+                    continue
+
+                cleaned_item = {
+                    "text": text,
+                    "tokenized_text": tokens,
+                    "ner": valid_ner,
+                    "ner_char": valid_ner_char,
+                }
+
+                if record_id is not None:
+                    cleaned_item["record_id"] = record_id
+
+                cleaned_data.extend(
+                    _window_example(
+                        cleaned_item,
+                        settings.BIONER_TRAIN_MAX_TOKENS,
+                        settings.BIONER_TRAIN_CONTEXT_PAD,
+                    )
+                )
                 continue
 
             # FALLBACK: Old format with "entities" field (character-based)
@@ -965,7 +1024,7 @@ class GLiNERFinetuner:
     ) -> tuple[
         GLiNERDataset,
         "GLiNERDataset | None",
-        SpanDataCollator,
+        Any,
         TrainingArguments,
         list[str],
         int,
@@ -977,16 +1036,31 @@ class GLiNERFinetuner:
         Returns:
             tuple: ``(train_ds, eval_ds, collator, args, labels, total_steps)``.
         """
+        labels = self.labels
         train_ds = GLiNERDataset(train_data)
         eval_ds = GLiNERDataset(val_data) if val_data else None
         # Eval reads gold spans from the raw items (which carry `ner_char`);
         # GLiNERDataset.__getitem__ would strip that key, so pass `val_data`.
 
-        collator = SpanDataCollator(
+        base_collator = SpanDataCollator(
             model.config,
             data_processor=model.data_processor,
             prepare_labels=True,
         )
+
+        def collator(items: list[dict]) -> dict:
+            prepared_items = [
+                (
+                    {
+                        **item,
+                        "ner_labels": list(labels),
+                    }
+                    if not item.get("ner")
+                    else item
+                )
+                for item in items
+            ]
+            return base_collator(prepared_items)
 
         for i, ex in enumerate(cleaned_data[:5]):
             assert ex.get("text") is not None, f"Missing text at {i}"
@@ -1065,11 +1139,6 @@ class GLiNERFinetuner:
                     assert text[start:end], "Empty span detected"
                     assert start < end
 
-        # Derive eval labels from the train+val union so labels that appear only
-        # in the validation/eval split are still scored.
-        labels = list(
-            set(e[2] for item in [*train_data, *val_data] for e in item["ner"])
-        )
         print("labels:", labels)
 
         return train_ds, eval_ds, collator, args, labels, total_steps

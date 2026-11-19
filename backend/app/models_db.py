@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Column, JSON
+from sqlalchemy import Column, JSON, UniqueConstraint
 from sqlmodel import SQLModel, Field, Relationship
 
 # ================================================
@@ -112,6 +112,56 @@ class ModelTrainRecordLink(SQLModel, table=True):
     record_id: Optional[int] = Field(
         default=None, foreign_key="record.id", primary_key=True
     )
+
+class ValidationSetRecordLink(SQLModel, table=True):
+    """Associate a shared validation set with its documents."""
+
+    __tablename__ = "validation_set_record_link"
+
+    validation_set_id: Optional[int] = Field(
+        default=None,
+        foreign_key="validation_set.id",
+        primary_key=True,
+        ondelete="CASCADE",
+    )
+    record_id: Optional[int] = Field(
+        default=None,
+        foreign_key="record.id",
+        primary_key=True,
+        ondelete="RESTRICT",
+    )
+
+
+class ValidationSet(SQLModel, table=True):
+    """A validation document set shared by runs of the same base model."""
+
+    __tablename__ = "validation_set"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "base_model",
+            name="uq_validation_set_user_base_model",
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(
+        foreign_key="user.id",
+        ondelete="CASCADE",
+        nullable=False,
+    )
+    base_model: str
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+    records: list["Record"] = Relationship(
+        link_model=ValidationSetRecordLink
+    )
+    models: list["Model"] = Relationship(
+        back_populates="validation_set"
+    )
+
 
 
 class Record(SQLModel, table=True):
@@ -281,6 +331,16 @@ class Model(SQLModel, table=True):
         default=None, foreign_key="dataset.id", ondelete="SET NULL"
     )
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    validation_set_id: Optional[int] = Field(
+        default=None,
+        foreign_key="validation_set.id",
+        ondelete="SET NULL",
+        index=True,
+    )
+    validation_set: Optional["ValidationSet"] = Relationship(
+        back_populates="models"
+    )
 
     # Relationship to SourceTermEx (one-to-many)
     # SourceTermEx extracted with this model

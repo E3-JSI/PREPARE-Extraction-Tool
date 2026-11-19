@@ -16,11 +16,15 @@ export interface LineSeries {
   area?: boolean;
   /** Draw the line across null gaps (for series with sparse points). */
   connectNulls?: boolean;
+  /** Show a marker for every data point. */
+  showSymbol?: boolean;
 }
 
 export interface LineChartProps {
   /** Category values along the x-axis. */
   xData: Array<string | number>;
+  /** Use a proportional numeric axis instead of equally spaced categories. */
+  xAxisType?: "category" | "value";
   /** One or more line series. */
   series: LineSeries[];
   height?: number;
@@ -40,6 +44,7 @@ export interface LineChartProps {
 /** Generic multi-series line chart. */
 const LineChart = ({
   xData,
+  xAxisType = "category",
   series,
   height = 300,
   xName,
@@ -51,6 +56,20 @@ const LineChart = ({
   valueFormatter,
   xAxisFormatter,
 }: LineChartProps) => {
+  const buildSeriesData = (values: (number | null)[]) => {
+    if (xAxisType === "category") {
+      return values;
+    }
+
+    return values.map(
+      (value, index) =>
+        [
+          Number(xData[index]),
+          value ?? "-",
+        ] as [number, number | "-"]
+    );
+  };
+  
   const option: EChartsOption = {
     grid: { left: 8, right: 16, top: showLegend ? 36 : 16, bottom: 8, containLabel: true },
     legend: showLegend ? { top: 0 } : undefined,
@@ -60,13 +79,31 @@ const LineChart = ({
       formatter:
         valueFormatter || xAxisFormatter ? buildAxisTooltipFormatter(valueFormatter, xAxisFormatter) : undefined,
     },
-    xAxis: {
-      type: "category",
-      data: xData.map(String),
-      name: xName,
-      boundaryGap: false,
-      axisLabel: xAxisFormatter ? { formatter: (value: string) => xAxisFormatter(value) } : undefined,
-    },
+    xAxis:
+      xAxisType === "value"
+        ? {
+            type: "value",
+            name: xName,
+            boundaryGap: false,
+            axisLabel: xAxisFormatter
+              ? {
+                  formatter: (value: number) =>
+                    xAxisFormatter(String(value)),
+                }
+              : undefined,
+          }
+        : {
+            type: "category",
+            data: xData.map(String),
+            name: xName,
+            boundaryGap: false,
+            axisLabel: xAxisFormatter
+              ? {
+                  formatter: (value: string) =>
+                    xAxisFormatter(value),
+                }
+              : undefined,
+          },
     yAxis: {
       type: "value",
       name: yName,
@@ -77,9 +114,9 @@ const LineChart = ({
     series: series.map((s) => ({
       name: s.name,
       type: "line",
-      data: s.data,
+      data: buildSeriesData(s.data),
       smooth: s.smooth ?? true,
-      showSymbol: false,
+      showSymbol: s.showSymbol ?? false,
       connectNulls: s.connectNulls ?? false,
       lineStyle: s.color ? { color: s.color, width: 2 } : { width: 2 },
       itemStyle: s.color ? { color: s.color } : undefined,

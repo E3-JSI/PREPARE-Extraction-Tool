@@ -63,6 +63,7 @@ class TrainingJobManager:
         self,
         run_id: int,
         base_model_path: str,
+        labels: list[str],
         training_data: list[dict],
         eval_data: Optional[list[dict]] = None,
         device: str = "cpu",
@@ -130,6 +131,7 @@ class TrainingJobManager:
             finetuner = GLiNERFinetuner(
                 run_id=run_id,
                 base_model_path=base_model_path,
+                labels=labels,
                 training_data=training_data,
                 eval_data=eval_data,
                 device=device,

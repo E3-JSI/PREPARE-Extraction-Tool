@@ -12,6 +12,7 @@ import type {
   MonitorRun,
   RunUpdate,
   TrainingMetric,
+  LearningCurveResponse,
 } from "types";
 
 // Note: auth is injected automatically by `apiRequest` from localStorage.
@@ -102,6 +103,13 @@ export function setActiveModel(modelId: number | null) {
 /** Per-model detail: training datasets, snapshot stats, base-vs-trained eval. */
 export function getModelDetail(modelId: number) {
   return apiRequest<ModelDetailResponse>(`/bioner/models/${modelId}/detail`);
+}
+
+/** Comparable completed runs for the selected model's learning curve. */
+export function getLearningCurve(modelId: number) {
+  return apiRequest<LearningCurveResponse>(
+    `/bioner/models/${modelId}/learning-curve`
+  );
 }
 
 /* ---------------- TRAINING ---------------- */
