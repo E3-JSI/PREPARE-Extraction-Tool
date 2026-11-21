@@ -762,6 +762,13 @@ def test_model_learning_curve_returns_sorted_comparable_runs(client):
         scores={"Drug": 0.8, "Disease": 0.6},
     )
 
+    target_run.baseline_per_label = {
+        "Drug": {"exact_f1": 0.4},
+        "Disease": {"exact_f1": 0.2},
+    }
+    db.add(target_run)
+    db.commit()
+
     add_run(
         name="different-labels",
         train_size=20,
@@ -794,6 +801,7 @@ def test_model_learning_curve_returns_sorted_comparable_runs(client):
     assert body["base_model"] == "/models/base-model"
     assert body["validation_set_id"] == validation_set_id
     assert body["labels"] == ["Drug", "Disease"]
+    assert body["baseline_macro_f1"] == pytest.approx(0.3)
 
     assert [
         (point["run_id"], point["num_train_documents"])

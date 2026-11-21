@@ -1,5 +1,4 @@
 import os
-import random
 import requests
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
@@ -55,6 +54,7 @@ from app.schemas import (
     TrainingRunSummary,
     TrainingRunUpdate,
     TrainingStartResponse,
+    ValidationSetSummary,
     LearningCurvePoint,
     LearningCurveResponse,
     create_pagination_metadata,
@@ -65,6 +65,7 @@ from app.services import (
     evaluation_service,
     gliner_data_service,
     training_service,
+    training_split_service,
 )
 from app.services.websocket_manager import manager
 
@@ -829,11 +830,9 @@ def model_detail(
         eval_ids = training_service.get_dataset_ids(db, run.id, role="eval") or []
         train_stats = run.train_stats
         labels = run.labels or []
-        baseline = training_service.get_baseline_model(db, run.dataset_id)
-        if baseline is not None:
-            per_label_baseline = _scores_only(
-                evaluation_service.get_per_label(db, baseline.id)
-            )
+        per_label_baseline = _scores_only(
+            run.baseline_per_label or {}
+        )
     return ModelDetailResponse(
         model_id=model.id,
         run_id=run.id if run else None,
@@ -917,6 +916,10 @@ def model_learning_curve(
     target_labels = normalize_labels(target_run.labels)
     target_base_model = target_run.base_model.strip()
 
+    baseline_macro_f1 = evaluation_service.compute_macro_f1(
+        target_run.baseline_per_label or {}
+    )
+
     comparable_runs = db.exec(
         select(TrainingRun)
         .join(Model, TrainingRun.model_id == Model.id)
@@ -973,6 +976,7 @@ def model_learning_curve(
         base_model=target_run.base_model,
         validation_set_id=model.validation_set_id,
         labels=target_run.labels or [],
+        baseline_macro_f1=baseline_macro_f1,
         points=points,
     )
 
@@ -1111,34 +1115,41 @@ def _reconcile_run_liveness(db: Session, run: TrainingRun) -> bool:
     return False
 
 
-def _split_training_documents(
-    documents: List[dict],
-    val_ratio: float,
-) -> tuple[List[dict], List[dict]]:
-    """Split cleaned documents into fixed training and validation groups."""
-    if not documents:
-        raise ValueError("No eligible reviewed documents were found.")
+@router.get(
+    "/training/validation-sets/latest",
+    response_model=Optional[ValidationSetSummary],
+)
+def latest_validation_set(
+    base_model: str = Query(..., min_length=1),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Return the newest saved validation set for a base model."""
+    normalized_base_model = base_model.strip()
 
-    if val_ratio <= 0:
-        return list(documents), []
-
-    if len(documents) < 2:
-        raise ValueError(
-            "At least two eligible documents are required for validation."
+    if not normalized_base_model:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A base model is required.",
         )
 
-    shuffled_documents = list(documents)
-    random.Random(42).shuffle(shuffled_documents)
-
-    split_index = int(len(shuffled_documents) * (1 - val_ratio))
-    split_index = max(
-        1,
-        min(split_index, len(shuffled_documents) - 1),
+    validation_set = training_service.get_latest_validation_set(
+        db,
+        current_user.id,
+        normalized_base_model,
     )
 
-    return (
-        shuffled_documents[:split_index],
-        shuffled_documents[split_index:],
+    if validation_set is None or validation_set.id is None:
+        return None
+
+    return ValidationSetSummary(
+        validation_set_id=validation_set.id,
+        base_model=validation_set.base_model,
+        record_count=training_service.count_validation_set_records(
+            db,
+            validation_set.id,
+        ),
+        created_at=validation_set.created_at,
     )
 
 
@@ -1151,6 +1162,40 @@ def start_training(
     # ``req.dataset_ids`` is resolved + de-duplicated by the schema validator.
     train_ids = req.dataset_ids
     eval_ids = req.eval_dataset_ids
+
+    selected_validation_set = None
+
+    if req.validation_set_id is not None:
+        selected_validation_set = (
+            training_service.get_validation_set_by_id(
+                db,
+                validation_set_id=req.validation_set_id,
+                user_id=current_user.id,
+                base_model=req.base_model,
+            )
+        )
+
+        if selected_validation_set is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "Saved validation set not found "
+                    "for this base model."
+                ),
+            )
+
+    if selected_validation_set is not None:
+        validation_source = "saved"
+    elif eval_ids:
+        validation_source = "datasets"
+    else:
+        validation_source = "split"
+
+    effective_val_ratio = (
+        req.val_ratio
+        if validation_source == "split"
+        else 0.0
+    )
 
     # Verify the caller owns every selected dataset (train + eval).
     for dsid in [*train_ids, *eval_ids]:
@@ -1185,14 +1230,20 @@ def start_training(
         "train_dataset_ids": train_ids,
         "eval_dataset_ids": eval_ids,
         **_compute_dataset_stats(db, train_ids),
-        "val_ratio": req.val_ratio,
+        "val_ratio": effective_val_ratio,
+        "validation_source": validation_source,
+        "validation_set_id": (
+            selected_validation_set.id
+            if selected_validation_set is not None
+            else None
+        ),
     }
     run = training_service.create_run(
         db,
         dataset_ids=train_ids,
         base_model=req.base_model,
         labels=req.labels,
-        val_ratio=req.val_ratio,
+        val_ratio=effective_val_ratio,
         eval_dataset_ids=eval_ids,
         train_stats=train_stats_snapshot,
     )
@@ -1209,11 +1260,7 @@ def start_training(
                 "No eligible reviewed training documents were found."
             )
 
-        validation_set = training_service.get_validation_set(
-            db,
-            current_user.id,
-            req.base_model,
-        )
+        validation_set = selected_validation_set
 
         if validation_set is not None:
             validation_record_ids = [
@@ -1256,9 +1303,10 @@ def start_training(
                     )
             else:
                 training_data, validation_data = (
-                    _split_training_documents(
+                    training_split_service.split_training_documents(
                         available_training_data,
-                        req.val_ratio,
+                        effective_val_ratio,
+                        req.labels,
                     )
                 )
 
@@ -1331,6 +1379,16 @@ def start_training(
                 detail=_bioner_conflict_detail(resp),
             ) from exc
         training_service.fail_run(db, run.id, f"failed to start trainer: {exc}")
+
+    except ValueError as exc:
+        message = str(exc)
+        training_service.fail_run(db, run.id, message)
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=message,
+        ) from exc
+
     except Exception as exc:  # trainer unreachable -> mark failed, but still return run
         training_service.fail_run(db, run.id, f"failed to start trainer: {exc}")
     return TrainingStartResponse(run_id=run.id)

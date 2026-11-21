@@ -774,6 +774,7 @@ class GLiNERTrainingRequest(BaseModel):
     dataset_id: Optional[int] = None
     dataset_ids: List[int] = Field(default_factory=list)
     eval_dataset_ids: List[int] = Field(default_factory=list)
+    validation_set_id: Optional[int] = Field(default=None, gt=0)
     labels: List[str] = Field(default_factory=list, min_length=1)
     base_model: str = "urchade/gliner_small-v2.1"
     val_ratio: float = Field(default=0.1, ge=0, lt=1)
@@ -797,6 +798,14 @@ class GLiNERTrainingRequest(BaseModel):
         self.dataset_ids = [i for i in ids if not (i in seen or seen.add(i))]
         if not self.dataset_ids:
             raise ValueError("at least one training dataset is required")
+        if (
+            self.validation_set_id is not None
+            and self.eval_dataset_ids
+        ):
+            raise ValueError(
+                "Choose either a saved validation set or "
+                "evaluation datasets."
+            )
         # eval datasets that are also training datasets are redundant; drop them
         train_set = set(self.dataset_ids)
         eval_seen: set = set()
@@ -810,6 +819,15 @@ class GLiNERTrainingRequest(BaseModel):
 
 class TrainingStartResponse(BaseModel):
     run_id: int
+
+
+class ValidationSetSummary(BaseModel):
+    """Saved validation set suggested for a base model."""
+
+    validation_set_id: int
+    base_model: str
+    record_count: int = Field(ge=0)
+    created_at: datetime
 
 
 class TrainingRunSummary(BaseModel):
@@ -851,6 +869,7 @@ class LearningCurveResponse(BaseModel):
     base_model: str
     validation_set_id: int
     labels: List[str] = Field(default_factory=list)
+    baseline_macro_f1: Optional[float] = None
     points: List[LearningCurvePoint] = Field(default_factory=list)
 
 

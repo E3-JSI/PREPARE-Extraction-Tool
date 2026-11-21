@@ -427,8 +427,8 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
 
   const resolvedModel = useCustomModel ? customModel.trim() : baseModel;
 
-  const startTraining = async () => {
-    if (trainingDatasetIds.length === 0) return;
+  const startTraining = async (validationSetId: number | null) => {
+    if (trainingDatasetIds.length === 0) return false;
 
     setTrainingMetrics([]);
     setIsTraining(true);
@@ -437,6 +437,7 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
       const data = await apiStartTraining({
         dataset_ids: trainingDatasetIds,
         eval_dataset_ids: evalDatasetIds,
+        validation_set_id: validationSetId,
         labels: selectedLabels,
         base_model: resolvedModel,
         val_ratio: valSplitRatio,
@@ -446,9 +447,11 @@ const MonitorProvider = ({ children }: { children: ReactNode }) => {
       });
 
       setActiveRunId(data.run_id);
+      return true;
     } catch (err) {
       setIsTraining(false);
       showAlert(describeStartError(err), "error");
+      return false;
     }
   };
 

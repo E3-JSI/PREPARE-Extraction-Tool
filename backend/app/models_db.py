@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Column, JSON, UniqueConstraint
+from sqlalchemy import Column, Index, JSON
 from sqlmodel import SQLModel, Field, Relationship
 
 # ================================================
@@ -133,17 +133,18 @@ class ValidationSetRecordLink(SQLModel, table=True):
 
 
 class ValidationSet(SQLModel, table=True):
-    """A validation document set shared by runs of the same base model."""
+    """An immutable validation document set shared by comparable runs."""
 
     __tablename__ = "validation_set"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "ix_validation_set_user_base_model_created_at_id",
             "user_id",
             "base_model",
-            name="uq_validation_set_user_base_model",
+            "created_at",
+            "id",
         ),
     )
-
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(
         foreign_key="user.id",
@@ -440,6 +441,12 @@ class TrainingRun(SQLModel, table=True):
     # term_count, label_distribution, train_size, eval_size, val_ratio}.
     train_stats: Optional[dict] = Field(
         default=None, sa_column=Column(JSON, nullable=True)
+    )
+    # Per-label evaluation of the starting base model on this run's frozen
+    # validation set. Stored per run so later training runs cannot overwrite it.
+    baseline_per_label: Optional[Dict[str, Dict[str, Any]]] = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
     )
 
     metrics: list["TrainingMetric"] = Relationship(

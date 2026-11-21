@@ -10,7 +10,6 @@ from sqlmodel import Session, func, select
 from app.models_db import (
     AppSettings,
     Dataset,
-    Evaluation,
     ExtractionJob,
     LiveEvalJob,
     Model,
@@ -25,15 +24,52 @@ from app.models_db import (
 from app.services import bioner_client, evaluation_service
 
 
-def get_validation_set(
-    db: Session, user_id: int, base_model: str
+def get_latest_validation_set(
+    db: Session,
+    user_id: int,
+    base_model: str,
 ) -> Optional[ValidationSet]:
-    """Find the saved validation set for this user and base model."""
+    """Find the newest validation set for this user and base model."""
     return db.exec(
         select(ValidationSet)
         .where(ValidationSet.user_id == user_id)
         .where(ValidationSet.base_model == base_model.strip())
+        .order_by(
+            ValidationSet.created_at.desc(),
+            ValidationSet.id.desc(),
+        )
     ).first()
+
+
+def get_validation_set_by_id(
+    db: Session,
+    *,
+    validation_set_id: int,
+    user_id: int,
+    base_model: str,
+) -> Optional[ValidationSet]:
+    """Find an exact validation set owned by this user and base model."""
+    return db.exec(
+        select(ValidationSet)
+        .where(ValidationSet.id == validation_set_id)
+        .where(ValidationSet.user_id == user_id)
+        .where(ValidationSet.base_model == base_model.strip())
+    ).first()
+
+
+def count_validation_set_records(
+    db: Session,
+    validation_set_id: int,
+) -> int:
+    """Count documents in a saved validation set."""
+    return int(
+        db.exec(
+            select(func.count(ValidationSetRecordLink.record_id)).where(
+                ValidationSetRecordLink.validation_set_id
+                == validation_set_id
+            )
+        ).one()
+    )
 
 
 def create_validation_set(
@@ -53,12 +89,6 @@ def create_validation_set(
     if not unique_record_ids:
         raise ValueError(
             "A validation set must contain at least one document."
-        )
-
-    if get_validation_set(db, user_id, base_model) is not None:
-        raise ValueError(
-            "A validation set already exists for this base model. "
-            "Reuse the saved set."
         )
 
     eligible_ids = set(
@@ -232,20 +262,20 @@ def save_training_assignment(
             "selected training datasets."
         )
 
-    validation_set = get_validation_set(
-        db, dataset.user_id, run.base_model
-    )
-    expected_validation_set_id = (
-        validation_set.id if validation_set is not None else None
-    )
-
-    if validation_set_id != expected_validation_set_id:
-        raise ValueError(
-            "The validation set must match the saved set "
-            "for this user and base model."
+    if validation_set_id is not None:
+        validation_set = get_validation_set_by_id(
+            db,
+            validation_set_id=validation_set_id,
+            user_id=dataset.user_id,
+            base_model=run.base_model,
         )
 
-    if validation_set_id is not None:
+        if validation_set is None:
+            raise ValueError(
+                "The selected validation set does not belong to this "
+                "user and base model."
+            )
+
         validation_ids = set(
             db.exec(
                 select(ValidationSetRecordLink.record_id).where(
@@ -473,23 +503,36 @@ def get_baseline_model(db: Session, dataset_id: int) -> Optional[Model]:
 def record_baseline_evaluation(
     db: Session, run_id: int, per_label: Dict[str, Dict[str, Any]]
 ) -> None:
-    """Store the untrained base model's per-label evaluation as a dataset baseline.
+    """Store the starting base model's evaluation on the exact training run.
 
-    Represents the default extraction model in the comparison dashboard so trained
-    runs can be compared against the starting point on the same eval split.
-
-    Args:
-        db (Session): Active DB session.
-        run_id (int): ID of the TrainingRun the baseline was evaluated for.
-        per_label (Dict[str, Dict[str, Any]]): Label -> metric mapping.
+    Only scalar metrics are retained. Concrete error examples are omitted to
+    keep the per-run snapshot small.
     """
     run = db.get(TrainingRun, run_id)
     if run is None:
         return
-    model = _ensure_baseline_model(db, run)
-    evaluation_service.store_evaluation(
-        db, model_id=model.id, dataset_id=run.dataset_id, per_label=per_label
+
+    metric_keys = (
+        "exact_f1",
+        "relaxed_f1",
+        "precision",
+        "recall",
+        "fp",
+        "fn",
     )
+
+    run.baseline_per_label = {
+        label: {
+            key: metrics[key]
+            for key in metric_keys
+            if key in metrics
+        }
+        for label, metrics in per_label.items()
+        if isinstance(label, str) and isinstance(metrics, dict)
+    }
+
+    db.add(run)
+    db.commit()
 
 
 def record_evaluation(
@@ -735,25 +778,8 @@ def get_current_step(db: Session, run_id: int) -> Optional[int]:
 
 
 def has_baseline_evaluation(db: Session, run: TrainingRun) -> bool:
-    """Return True once the run's dataset has a stored baseline evaluation.
-
-    The baseline (untrained base model) evaluation is written when the trainer
-    emits ``baseline_evaluation_completed`` — its presence marks the transition
-    out of the baseline-evaluation phase into trainer initialization. Used to
-    derive the live pre-training phase for Monitor rehydration.
-
-    Args:
-        db (Session): Active DB session.
-        run (TrainingRun): The run whose dataset baseline to check.
-
-    Returns:
-        bool: Whether a baseline evaluation exists for the run's dataset.
-    """
-    model = get_baseline_model(db, run.dataset_id)
-    if model is None:
-        return False
-    row = db.exec(select(Evaluation.id).where(Evaluation.model_id == model.id)).first()
-    return row is not None
+    """Return whether baseline evaluation finished for this exact run."""
+    return run.baseline_per_label is not None
 
 
 def derive_training_phase(

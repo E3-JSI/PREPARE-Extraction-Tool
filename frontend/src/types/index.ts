@@ -497,6 +497,14 @@ export interface MonitorDataset {
   name: string;
 }
 
+/** Newest saved validation set suggested for a base model. */
+export interface ValidationSetSummary {
+  validation_set_id: number;
+  base_model: string;
+  record_count: number;
+  created_at: string;
+}
+
 /** A training run with the metadata needed to compare/manage runs. */
 export interface MonitorRun {
   run_id: number;
@@ -657,6 +665,7 @@ export interface LearningCurveResponse {
   base_model: string;
   validation_set_id: number;
   labels: string[];
+  baseline_macro_f1: number | null;
   points: LearningCurvePoint[];
 }
 

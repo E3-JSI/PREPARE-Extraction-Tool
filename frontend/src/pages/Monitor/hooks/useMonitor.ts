@@ -58,7 +58,7 @@ export interface MonitorContextValue {
   setTrainBatchSize: (n: number) => void;
 
   // ── actions ──
-  startTraining: () => Promise<void>;
+  startTraining: (validationSetId: number | null) => Promise<boolean>;
   stopTraining: () => Promise<void>;
 
   // ── feedback ──

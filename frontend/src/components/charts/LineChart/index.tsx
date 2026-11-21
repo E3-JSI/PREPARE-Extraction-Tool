@@ -84,7 +84,6 @@ const LineChart = ({
         ? {
             type: "value",
             name: xName,
-            boundaryGap: false,
             axisLabel: xAxisFormatter
               ? {
                   formatter: (value: number) =>

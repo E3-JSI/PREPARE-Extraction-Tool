@@ -520,13 +520,15 @@ class GLiNERFinetuner:
             )
 
         finally:
-            # A stopped run must actually release its memory, or the leftovers
-            # count against the next run's budget.
+            # A finished or stopped run must release its data and model memory
+            # before another training run starts.
             self.training_data = []
             self.eval_data = []
+
+            release_freed_memory()
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            release_freed_memory()
 
     # -----------------------------
     # TRAINING CORE
@@ -903,6 +905,15 @@ class GLiNERFinetuner:
 
         try:
             trainer.train()
+
+            # Final evaluation and saving only need the trained model.
+            # Release the Trainer, optimizer, scheduler, gradients and dataloaders.
+            model.zero_grad(set_to_none=True)
+            del trainer
+            release_freed_memory()
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             self._run_evaluation(
                 model, val_data, labels, train_data, total, train_pct, val_pct

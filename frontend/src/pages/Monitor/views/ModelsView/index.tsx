@@ -187,7 +187,12 @@ export const ModelDetail = ({
             height={CHART_HEIGHT}
           />
         ) : (
-          <LearningCurveChart points={learningCurve?.points ?? []} />
+          <LearningCurveChart
+            points={learningCurve?.points ?? []}
+            baselineMacroF1={
+              learningCurve?.baseline_macro_f1 ?? null
+            }
+          />
         )}
       </Card>
 
