@@ -542,7 +542,7 @@ class GLiNERFinetuner:
         ``{"text": ..., "entities": [...]}``. Token-form items keep their
         ``tokenized_text`` plus character spans in ``ner_char`` (used by eval and
         serialized samples, which slice ``text[start:end]``); ``ner`` stays as
-        token spans for the GLiNER collator. Items with no entities are retained 
+        token spans for the GLiNER collator. Items with no entities are retained
         as negative examples. Malformed items are dropped.
 
         Args:

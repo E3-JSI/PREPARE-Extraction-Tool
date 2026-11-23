@@ -79,7 +79,7 @@ const LineChart = ({
         ] as [number, number | "-"]
     );
   };
-  
+
   const tooltipXFormatter =
     tooltipXAxisFormatter ?? xAxisFormatter;
 
