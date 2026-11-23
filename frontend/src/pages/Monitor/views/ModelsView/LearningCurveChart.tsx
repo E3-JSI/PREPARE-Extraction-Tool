@@ -1,4 +1,8 @@
-import { ChartState, LineChart } from "@components/charts";
+import {
+  ChartState,
+  CHART_TOKENS,
+  LineChart,
+} from "@components/charts";
 import type { LearningCurvePoint } from "types";
 
 import { CHART } from "../../chartColors";
@@ -8,16 +12,22 @@ const CHART_HEIGHT = 280;
 interface LearningCurveChartProps {
   points: LearningCurvePoint[];
   baselineMacroF1?: number | null;
+  selectedModelId?: number | null;
 }
 
 const LearningCurveChart = ({
   points,
   baselineMacroF1,
+  selectedModelId,
 }: LearningCurveChartProps) => {
   const sortedPoints = [...points].sort(
     (a, b) =>
       a.num_train_documents - b.num_train_documents ||
       a.run_id - b.run_id
+  );
+
+  const selectedPoint = sortedPoints.find(
+    (point) => point.model_id === selectedModelId
   );
 
   const baselineValue =
@@ -78,6 +88,13 @@ const LearningCurveChart = ({
             color: CHART.exactF1,
             smooth: false,
             showSymbol: true,
+            highlightPoint: selectedPoint
+              ? {
+                  x: selectedPoint.num_train_documents,
+                  y: selectedPoint.macro_f1,
+                  color: CHART_TOKENS.primary,
+                }
+              : undefined,
           },
         ]}
       />

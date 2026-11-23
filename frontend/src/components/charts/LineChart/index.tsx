@@ -18,6 +18,13 @@ export interface LineSeries {
   connectNulls?: boolean;
   /** Show a marker for every data point. */
   showSymbol?: boolean;
+  /** Draw a larger marker over one specific point. */
+  highlightPoint?: {
+    x: string | number;
+    y: number;
+    color?: string;
+    symbolSize?: number;
+  };
 }
 
 export interface LineChartProps {
@@ -120,6 +127,27 @@ const LineChart = ({
       lineStyle: s.color ? { color: s.color, width: 2 } : { width: 2 },
       itemStyle: s.color ? { color: s.color } : undefined,
       areaStyle: s.area ? { opacity: 0.08 } : undefined,
+      markPoint: s.highlightPoint
+        ? {
+            silent: true,
+            symbol: "circle",
+            symbolSize:
+              s.highlightPoint.symbolSize ?? 10,
+            label: { show: false },
+            itemStyle: {
+              color:
+                s.highlightPoint.color ?? s.color,
+            },
+            data: [
+              {
+                coord: [
+                  s.highlightPoint.x,
+                  s.highlightPoint.y,
+                ],
+              },
+            ],
+          }
+        : undefined,
     })),
   };
 

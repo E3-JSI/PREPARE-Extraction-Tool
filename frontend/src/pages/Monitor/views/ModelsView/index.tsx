@@ -192,6 +192,7 @@ export const ModelDetail = ({
             baselineMacroF1={
               learningCurve?.baseline_macro_f1 ?? null
             }
+            selectedModelId={detail.model_id}
           />
         )}
       </Card>

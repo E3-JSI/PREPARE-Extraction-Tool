@@ -893,6 +893,44 @@ def set_global_active_model(db: Session, model_id: Optional[int]) -> AppSettings
     return row
 
 
+def _delete_validation_set_if_unused(
+    db: Session,
+    validation_set_id: Optional[int],
+) -> None:
+    """Delete a validation set when no model uses it anymore."""
+    if validation_set_id is None:
+        return
+
+    remaining_model = db.exec(
+        select(Model.id)
+        .join(TrainingRun, TrainingRun.model_id == Model.id)
+        .where(Model.validation_set_id == validation_set_id)
+        .where(
+            TrainingRun.status.in_(
+                ["pending", "running", "completed"]
+            )
+        )
+        .limit(1)
+    ).first()
+
+    if remaining_model is not None:
+        return
+
+    links = db.exec(
+        select(ValidationSetRecordLink).where(
+            ValidationSetRecordLink.validation_set_id
+            == validation_set_id
+        )
+    ).all()
+
+    for link in links:
+        db.delete(link)
+
+    validation_set = db.get(ValidationSet, validation_set_id)
+    if validation_set is not None:
+        db.delete(validation_set)
+
+
 def delete_run(db: Session, run_id: int) -> bool:
     """Delete a run and its dependent rows.
 
@@ -946,6 +984,8 @@ def delete_model(db: Session, model: Model) -> None:
     cleared (matching runs whose model was deleted before this endpoint existed).
     Evaluation and SourceTermEx rows are removed by the ORM cascade.
     """
+    validation_set_id = model.validation_set_id
+
     for job in db.exec(
         select(ExtractionJob).where(ExtractionJob.model_id == model.id)
     ).all():
@@ -964,6 +1004,13 @@ def delete_model(db: Session, model: Model) -> None:
         db.add(run)
     db.flush()
     db.delete(model)
+    db.flush()
+
+    _delete_validation_set_if_unused(
+        db,
+        validation_set_id,
+    )
+
     db.commit()
 
 

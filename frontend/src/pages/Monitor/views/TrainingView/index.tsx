@@ -51,6 +51,7 @@ const VRAM_TOOLTIP =
   "Approximate peak GPU VRAM to fine-tune at the default batch size (8). Actual usage varies with batch size and sequence length.";
 
 const SPLIT_OPTIONS = [
+  { value: "0", label: "100 / 0 (no validation)" },
   { value: "0.1", label: "90 / 10" },
   { value: "0.2", label: "80 / 20" },
   { value: "0.3", label: "70 / 30" },

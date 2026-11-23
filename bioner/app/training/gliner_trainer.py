@@ -520,15 +520,15 @@ class GLiNERFinetuner:
             )
 
         finally:
-            # A finished or stopped run must release its data and model memory
-            # before another training run starts.
+            # A stopped run must actually release its memory, or the leftovers
+            # count against the next run's budget.
             self.training_data = []
             self.eval_data = []
 
-            release_freed_memory()
-
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+            release_freed_memory()
 
     # -----------------------------
     # TRAINING CORE
@@ -896,7 +896,7 @@ class GLiNERFinetuner:
         # comparison dashboard has a same-split reference point for the default
         # extraction model (the run's starting weights). Best-effort — it runs
         # inside this background training job and never blocks anything else.
-        if not self._stop_event.is_set():
+        if val_data and not self._stop_event.is_set():
             try:
                 self._run_baseline_evaluation(model, val_data, labels)
             except _TrainingStopped:
@@ -906,18 +906,16 @@ class GLiNERFinetuner:
         try:
             trainer.train()
 
-            # Final evaluation and saving only need the trained model.
-            # Release the Trainer, optimizer, scheduler, gradients and dataloaders.
-            model.zero_grad(set_to_none=True)
-            del trainer
-            release_freed_memory()
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            self._run_evaluation(
-                model, val_data, labels, train_data, total, train_pct, val_pct
-            )
+            if val_data:
+                self._run_evaluation(
+                    model,
+                    val_data,
+                    labels,
+                    train_data,
+                    total,
+                    train_pct,
+                    val_pct,
+                )
 
         except (KeyboardInterrupt, _TrainingStopped):
             self._emit_stopped()

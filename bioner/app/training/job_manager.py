@@ -1,4 +1,4 @@
-from collections import OrderedDict
+import itertools
 import logging
 import threading
 from enum import Enum
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 # Statuses that mean a job has finished and no longer holds the GPU slot.
 # Anything NOT in this set (idle/pending/running) is treated as active.
 _TERMINAL_STATUSES = ("completed", "failed", "stopped")
-_TERMINAL_CACHE_SIZE = 20
+
 # When a new run arrives while a previous run is still winding down after a stop
 # request, join its worker thread for at most this long before giving up and
 # reporting the slot as still busy (STOPPING). Kept short so the API stays
@@ -35,13 +35,17 @@ class TrainingJobManager:
     _instance: Optional["TrainingJobManager"] = None
     _class_lock = threading.Lock()
 
-    # Contains only jobs whose worker has not completely finished yet.
+    # Instance attributes (populated in __new__). Declared here so their types
+    # are known to the type checker despite being assigned via ``instance.x``.
     _jobs: Dict[int, GLiNERFinetuner]
+    # Worker thread per run_id, so a start after a stop can join the previous
+    # worker before reusing the slot.
     _threads: Dict[int, threading.Thread]
     _jobs_lock: threading.Lock
-
-    # Small status snapshots for the most recently finished jobs.
-    _terminal_snapshots: "OrderedDict[int, dict]"
+    # Monotonic counter recording the order jobs reach a terminal status, so
+    # pruning can keep the most-recently-finished jobs.
+    _finish_counter: "itertools.count[int]"
+    _finish_order: Dict[int, int]
 
     def __new__(cls) -> "TrainingJobManager":
         with cls._class_lock:
@@ -50,7 +54,8 @@ class TrainingJobManager:
                 instance._jobs = {}
                 instance._threads = {}
                 instance._jobs_lock = threading.Lock()
-                instance._terminal_snapshots = OrderedDict()
+                instance._finish_counter = itertools.count()
+                instance._finish_order = {}
                 cls._instance = instance
         return cls._instance
 
@@ -104,6 +109,10 @@ class TrainingJobManager:
                     )
                     return StartResult.STOPPING
 
+                # Worker finished: evict it so the slot (and run_id) is free even
+                # if it somehow left a non-terminal status behind.
+                self._evict_locked(existing.run_id)
+
                 # A concurrent start_job may have claimed the slot while we had
                 # released the lock to join. Re-check before reserving.
                 still_active = self._active_locked()
@@ -136,15 +145,14 @@ class TrainingJobManager:
             # concurrent start_job sees this job as active. The worker thread sets
             # it to "running" again under _status_lock, which is harmless.
             finetuner._status = "running"
-            self._terminal_snapshots.pop(run_id, None)
             self._jobs[run_id] = finetuner
 
             def _run():
                 try:
                     finetuner.run()
                 finally:
-                    self._finish_job(run_id, finetuner)
                     logger.info(f"Training job {run_id} done")
+                    self._prune_old_jobs()
 
             t = threading.Thread(
                 target=_run,
@@ -152,13 +160,7 @@ class TrainingJobManager:
                 daemon=False,
             )
             self._threads[run_id] = t
-
-            try:
-                t.start()
-            except BaseException:
-                self._jobs.pop(run_id, None)
-                self._threads.pop(run_id, None)
-                raise
+            t.start()
 
             logger.info(f"Training job {run_id} started on device={device}")
             return StartResult.STARTED
@@ -168,10 +170,9 @@ class TrainingJobManager:
     def get_status(self, run_id: int) -> Optional[dict]:
         with self._jobs_lock:
             job = self._jobs.get(run_id)
-            terminal = self._terminal_snapshots.get(run_id)
 
-            if job is None:
-                return dict(terminal) if terminal is not None else None
+        if not job:
+            return None
 
         return job.get_snapshot()
 
@@ -193,41 +194,36 @@ class TrainingJobManager:
         return True
 
     def _active_locked(self) -> list[GLiNERFinetuner]:
-        """Return workers that have not completely finished cleanup yet."""
-        return list(self._jobs.values())
+        """Non-terminal jobs (idle/pending/running). Call with _jobs_lock held."""
+        return [
+            j for j in self._jobs.values() if j._status not in _TERMINAL_STATUSES
+        ]
 
-    def _terminal_snapshot(self, job: GLiNERFinetuner) -> dict:
-        """Keep only the small part of a completed job needed by status calls."""
-        status = job._status
-        error = getattr(job, "_error", None)
+    def _evict_locked(self, run_id: int) -> None:
+        """Drop all bookkeeping for ``run_id``. Call with _jobs_lock held."""
+        self._jobs.pop(run_id, None)
+        self._threads.pop(run_id, None)
+        self._finish_order.pop(run_id, None)
 
-        if status not in _TERMINAL_STATUSES:
-            status = "failed"
-            error = error or "Training worker exited unexpectedly."
-
-        return {
-            "status": status,
-            "new_events": [],
-            "output_path": getattr(job, "_output_path", None),
-            "error": error,
-        }
-
-    def _finish_job(self, run_id: int, job: GLiNERFinetuner) -> None:
-        """Replace a finished finetuner with a lightweight status snapshot."""
-        snapshot = self._terminal_snapshot(job)
-
+    def _prune_old_jobs(self, keep_last: int = 20) -> None:
         with self._jobs_lock:
-            if self._jobs.get(run_id) is not job:
-                return
+            # Stamp any newly-terminal job with the next finish-order ticket so
+            # we can rank by completion time rather than insertion order.
+            for rid, j in self._jobs.items():
+                if j._status in _TERMINAL_STATUSES and rid not in self._finish_order:
+                    self._finish_order[rid] = next(self._finish_counter)
 
-            self._jobs.pop(run_id, None)
-            self._threads.pop(run_id, None)
+            # Sort terminal jobs by finish order (oldest first) so slicing off
+            # all but the last keep_last keeps the newest finished jobs.
+            done = sorted(
+                (rid for rid, j in self._jobs.items() if j._status in _TERMINAL_STATUSES),
+                key=lambda rid: self._finish_order[rid],
+            )
 
-            self._terminal_snapshots[run_id] = snapshot
-            self._terminal_snapshots.move_to_end(run_id)
-
-            while len(self._terminal_snapshots) > _TERMINAL_CACHE_SIZE:
-                self._terminal_snapshots.popitem(last=False)
+            for rid in done[:-keep_last]:
+                del self._jobs[rid]
+                self._threads.pop(rid, None)
+                self._finish_order.pop(rid, None)
 
 
 def get_training_job_manager() -> TrainingJobManager:

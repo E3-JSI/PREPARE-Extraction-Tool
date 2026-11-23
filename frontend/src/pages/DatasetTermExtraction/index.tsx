@@ -443,12 +443,14 @@ const DatasetTermExtraction: React.FC = () => {
   }, []);
 
   const handleExtractTermsForDataset = useCallback(() => {
-    if (!stats?.total_records) return;
+    if (!stats?.pending_review_count) return;
+
+    const recordCount = stats.pending_review_count;
 
     setConfirmDialog({
       isOpen: true,
       title: "Extract Terms",
-      message: `This will extract terms from all ${stats.total_records} record${stats.total_records !== 1 ? "s" : ""} in the dataset using ${activeModelName}. This may take several minutes. Continue?`,
+      message: `This will extract terms from ${recordCount} unreviewed record${recordCount !== 1 ? "s" : ""} in the dataset using ${activeModelName}. This may take several minutes. Continue?`,
       variant: "warning",
       onConfirm: async () => {
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
@@ -457,7 +459,7 @@ const DatasetTermExtraction: React.FC = () => {
           if (result.status === "cancelled") {
             toast.warning("Extraction was cancelled by the user");
           } else {
-            toast.success("Terms extracted successfully for all records");
+            toast.success("Term extraction completed");
           }
         } catch (err) {
           toast.error(err instanceof Error ? err.message : "Failed to extract terms");
