@@ -140,6 +140,7 @@ const LineChart = ({
             },
             data: [
               {
+                name: s.name,
                 coord: [
                   s.highlightPoint.x,
                   s.highlightPoint.y,
