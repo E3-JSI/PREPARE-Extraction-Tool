@@ -78,6 +78,13 @@ const LearningCurveChart = ({
             ? "Base model"
             : numericValue.toLocaleString();
         }}
+        tooltipXAxisFormatter={(value) => {
+          const numericValue = Number(value);
+
+          return baselineValue !== null && numericValue === 0
+            ? "Base model"
+            : `Training documents: ${numericValue.toLocaleString()}`;
+        }}
         valueFormatter={(value) =>
           `${(value * 100).toFixed(1)}%`
         }

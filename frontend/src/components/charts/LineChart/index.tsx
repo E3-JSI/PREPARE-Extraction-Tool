@@ -44,8 +44,10 @@ export interface LineChartProps {
   notMerge?: boolean;
   /** Format y-values for the y-axis labels and tooltip series values. */
   valueFormatter?: (value: number) => string;
-  /** Format x-axis category labels and the tooltip header. */
+  /** Format visible x-axis labels. */
   xAxisFormatter?: (value: string) => string;
+  /** Format the tooltip header independently of x-axis labels. */
+  tooltipXAxisFormatter?: (value: string) => string;
 }
 
 /** Generic multi-series line chart. */
@@ -62,6 +64,7 @@ const LineChart = ({
   notMerge,
   valueFormatter,
   xAxisFormatter,
+  tooltipXAxisFormatter,
 }: LineChartProps) => {
   const buildSeriesData = (values: (number | null)[]) => {
     if (xAxisType === "category") {
@@ -77,6 +80,9 @@ const LineChart = ({
     );
   };
   
+  const tooltipXFormatter =
+    tooltipXAxisFormatter ?? xAxisFormatter;
+
   const option: EChartsOption = {
     grid: { left: 8, right: 16, top: showLegend ? 36 : 16, bottom: 8, containLabel: true },
     legend: showLegend ? { top: 0 } : undefined,
@@ -84,7 +90,12 @@ const LineChart = ({
       trigger: "axis",
       // Build the body ourselves so both the header (x) and series values (y) are formatted.
       formatter:
-        valueFormatter || xAxisFormatter ? buildAxisTooltipFormatter(valueFormatter, xAxisFormatter) : undefined,
+        valueFormatter || tooltipXFormatter
+          ? buildAxisTooltipFormatter(
+              valueFormatter,
+              tooltipXFormatter
+            )
+          : undefined,
     },
     xAxis:
       xAxisType === "value"
