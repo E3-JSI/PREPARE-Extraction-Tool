@@ -1,8 +1,11 @@
 import litserve as ls
 import logging
+import os
 import threading
 from argparse import ArgumentParser, ArgumentTypeError
 from app.interfaces import NERRequest
+from app.library.clinical_relations import ImprovedClinicalPipeline
+from app.schemas import MultilingualClinicalConfig
 from app.engines import build_engine
 from app.model_manager import STATE_PATH, read_desired, read_model_metadata, write_desired
 from app.routes_model import register_model_context, router as model_router
@@ -60,6 +63,10 @@ class NERAPI(ls.LitAPI):
             adapter_model=self.adapter_model,
             prompt_path=self.prompt_path,
             use_gpu=self.use_gpu)
+        self.clinical_pipeline = ImprovedClinicalPipeline(
+            use_context_classifier=os.getenv("CLINICAL_USE_CONTEXT_MODEL", "0").lower() in {"1", "true", "yes", "on"},
+            context_classifier_model=os.getenv("CLINICAL_CONTEXT_MODEL", "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"),
+        )
 
     def _maybe_swap_model(self):
         """Hot-swap the in-memory engine when the desired model has changed.
@@ -104,17 +111,50 @@ class NERAPI(ls.LitAPI):
         self.active_model = target
 
     def decode_request(self, request: NERRequest) -> dict:
+        requested_labels = request.labels or []
+        label_map = requested_labels if isinstance(requested_labels, dict) else {}
+        # The former backend pipeline used its multilingual default NER labels
+        # when the dataset did not configure any explicit ones.
+        if request.include_relations and not requested_labels:
+            language = request.language or MultilingualClinicalConfig.detect_language(request.medical_text)
+            requested_labels = MultilingualClinicalConfig.NER_LABELS.get(
+                language, MultilingualClinicalConfig.NER_LABELS["en"]
+            )
         return {
             "medical_text": request.medical_text,
-            "labels": request.labels or [],
+            "labels": list(label_map) if label_map else requested_labels,
+            "label_map": label_map,
+            "include_relations": request.include_relations,
+            "label_relations": request.label_relations,
+            "date_label": request.date_label,
+            "language": request.language,
+            "existing_entities": request.existing_entities,
         }
 
     def predict(self, inputs: dict) -> dict:
         # Serialize model swap + inference so a switch never happens mid-request.
         with self._swap_lock:
             self._maybe_swap_model()
-            return self.model.extract_entities(medical_text=inputs["medical_text"],
-                                               labels=inputs["labels"])
+            predictions = self.model.extract_entities(
+                medical_text=inputs["medical_text"], labels=inputs["labels"]
+            )
+        # Inference and model swapping are serialized, but deterministic relation
+        # work runs outside the lock and does not occupy backend workers.
+        if inputs["label_map"]:
+            label_map = inputs["label_map"]
+            predictions = [
+                pred.model_copy(update={"label": label_map.get(pred.label.casefold(), pred.label)})
+                if hasattr(pred, "model_copy") else {**pred, "label": label_map.get(pred["label"].casefold(), pred["label"])}
+                for pred in predictions
+            ]
+        if not inputs["include_relations"]:
+            return predictions
+        return self.clinical_pipeline.run(
+            text=inputs["medical_text"], predictions=predictions,
+            language=inputs["language"], existing_entities=inputs["existing_entities"],
+            label_relations=inputs["label_relations"], date_label=inputs["date_label"],
+            label_map=inputs["label_map"],
+        )
 
     def encode_response(self, output):
         return output
@@ -173,10 +213,8 @@ if __name__ == "__main__":
     )
     server.app.include_router(training_router)
     server.app.include_router(model_router)
-    # Wire the activate route and reset the desired-model state to the default so
-    # a stale state file from a previous run can't change the startup model.
     register_model_context(server, args.model, args.engine)
     write_desired(args.model, model_metadata)
-    # Exit on inference-worker death so the container restart policy recovers.
+    #exit on inference-worker death so the container restart policy recovers
     start_worker_supervisor()
     server.run(host=args.host, port=args.port)

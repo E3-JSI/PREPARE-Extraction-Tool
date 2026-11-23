@@ -1,5 +1,6 @@
 fastapi[standard]
 uvicorn[standard]
+pydantic
 pydantic-settings
 python-dotenv
 sqlmodel

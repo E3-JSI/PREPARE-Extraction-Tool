@@ -172,7 +172,13 @@ def test_reextraction_reprocesses_eligible_records_on_rerun(engine, monkeypatch)
     def fake_post(url, json=None, timeout=None):
         called_texts.append(json["medical_text"])
         return _FakeResponse(
-            [{"text": "aspirin", "label": "Drug", "start": 0, "end": 7, "score": 0.9}]
+            {
+                "entities": [
+                    {"id": "T1", "text": "aspirin", "label": "Drug",
+                     "start": 0, "end": 7, "score": 0.9}
+                ],
+                "relations": [],
+            }
         )
 
     monkeypatch.setattr(bioner.requests, "post", fake_post)
@@ -221,7 +227,13 @@ def test_single_record_extract_writes_only_source_term(engine, monkeypatch):
     def fake_post(url, json=None, timeout=None):
         calls.append(json["medical_text"])
         return _FakeResponse(
-            [{"text": "aspirin", "label": "Drug", "start": 0, "end": 7, "score": 0.9}]
+            {
+                "entities": [
+                    {"id": "T1", "text": "aspirin", "label": "Drug",
+                     "start": 0, "end": 7, "score": 0.9}
+                ],
+                "relations": [],
+            }
         )
 
     monkeypatch.setattr(bioner.requests, "post", fake_post)

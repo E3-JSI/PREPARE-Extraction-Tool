@@ -19,8 +19,9 @@ from app.core.database import Dataset, User, engine, get_session
 from app.core.settings import settings
 from app.interfaces import Entity, LabelsInput, NERRequest
 from app.library.record_processing import (
-    auto_link_entities_for_record,
-    link_dates_for_record,
+    existing_manual_entities,
+    save_service_response,
+    service_label_map,
 )
 from app.models_db import (
     ExtractionJob,
@@ -136,75 +137,28 @@ def extract_entities_from_record(
     # An explicit single-record (re-)extract always re-runs the model and writes
     # SourceTerm fresh — no shortcut restoring cached terms.
 
-    # Delete only automatically extracted SourceTerms for this record
-    auto_terms = db.exec(
-        select(SourceTerm)
-        .where(SourceTerm.record_id == record_id)
-        .where(SourceTerm.automatically_extracted == True)  # noqa: E712
-    ).all()
+    # Call BioNER BEFORE deleting old terms: service failure leaves DB untouched.
+    manual = existing_manual_entities(db, record)
+    label_map = service_label_map(dataset, labels.labels)
+    try:
+        result = bioner_client.extract_with_relations(
+            record.text, label_map, dataset.label_relations, dataset.date_label, manual
+        )
+    except requests.RequestException:
+        raise HTTPException(status_code=503, detail="Extraction service unavailable")
+    except bioner_client.InvalidNERResponse as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
+    auto_terms = db.exec(select(SourceTerm).where(
+        SourceTerm.record_id == record_id,
+        SourceTerm.automatically_extracted == True,  # noqa: E712
+    )).all()
     for term in auto_terms:
         db.delete(term)
     db.flush()
-
-    request_data = {"medical_text": record.text, "labels": labels.labels}
-
-    try:
-        response = requests.post(
-            f"{settings.EXTRACT_HOST}/ner", json=request_data, timeout=300
-        )
-        response.raise_for_status()
-        entities = response.json()
-    except requests.RequestException:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Extraction service unavailable",
-        )
-
-    # Keep manually created/edited SourceTerms and avoid duplicating them
-    existing_keys = {
-        (t.value, t.label, t.start_position, t.end_position)
-        for t in db.exec(
-            select(SourceTerm).where(SourceTerm.record_id == record_id)
-        ).all()
-    }
-
-    seen_in_response = set()
-    new_terms: List[SourceTerm] = []
-
-    for entity in entities:
-        key = (entity["text"], entity["label"], entity["start"], entity["end"])
-
-        if key in seen_in_response:
-            continue
-        seen_in_response.add(key)
-
-        if key in existing_keys:
-            continue
-        existing_keys.add(key)
-        new_terms.append(
-            SourceTerm(
-                record_id=record_id,
-                value=entity["text"],
-                label=entity["label"],
-                start_position=entity["start"],
-                end_position=entity["end"],
-                score=entity.get("score"),
-                automatically_extracted=True,
-            )
-        )
-
-    if new_terms:
-        db.add_all(new_terms)
-        db.flush()
-        link_dates_for_record(db, record, dataset)
-        auto_link_entities_for_record(db, record, dataset)
-
+    count = save_service_response(db, record, dataset, result, list(label_map.values()))
     db.commit()
-
-    return MessageOutput(
-        message=f"Extracted and saved {len(new_terms)} entities from record {record_id}"
-    )
+    return MessageOutput(message=f"Extracted and saved {count} entities from record {record_id}")
 
 
 @router.post("/{dataset_id}/records/extract", response_model=ExtractionJobStartResponse)
@@ -500,27 +454,14 @@ def run_dataset_extraction_job(job_id: int, dataset_id: int, labels: List[str]):
                 session.commit()
                 return
 
-            # Clear stale auto-extracted terms before re-running NER so a repeat run
-            # yields a fresh full extraction. Manual terms are safe: records with any
-            # manual term were excluded from records_to_process above.
-            auto_terms = session.exec(
-                select(SourceTerm)
-                .where(SourceTerm.record_id == record.id)
-                .where(SourceTerm.automatically_extracted == True)  # noqa: E712
-            ).all()
-            for term in auto_terms:
-                session.delete(term)
-            if auto_terms:
-                session.flush()
-
-            request_data = {"medical_text": record.text, "labels": labels}
+            # Fetch before clearing automatic terms (safe on bioner failure).
             try:
-                response = requests.post(
-                    f"{settings.EXTRACT_HOST}/ner", json=request_data, timeout=300
+                label_map = service_label_map(dataset, labels)
+                result = bioner_client.extract_with_relations(
+                    record.text, label_map, dataset.label_relations, dataset.date_label,
+                    existing_manual_entities(session, record),
                 )
-                response.raise_for_status()
-                entities = response.json()
-            except requests.RequestException as exc:
+            except (requests.RequestException, bioner_client.InvalidNERResponse) as exc:
                 job.status = "failed"
                 job.error_message = str(exc)
                 job.updated_at = datetime.now(timezone.utc)
@@ -528,43 +469,14 @@ def run_dataset_extraction_job(job_id: int, dataset_id: int, labels: List[str]):
                 session.commit()
                 return
 
-            existing_keys = {
-                (t.value, t.label, t.start_position, t.end_position)
-                for t in session.exec(
-                    select(SourceTerm).where(SourceTerm.record_id == record.id)
-                ).all()
-            }
-
-            seen_in_response = set()
-
-            new_terms: List[SourceTerm] = []
-            for entity in entities:
-                key = (entity["text"], entity["label"], entity["start"], entity["end"])
-
-                if key in seen_in_response:
-                    continue
-                seen_in_response.add(key)
-
-                if key in existing_keys:
-                    continue
-                existing_keys.add(key)
-                new_terms.append(
-                    SourceTerm(
-                        record_id=record.id,
-                        value=entity["text"],
-                        label=entity["label"],
-                        start_position=entity["start"],
-                        end_position=entity["end"],
-                        score=entity.get("score"),
-                        automatically_extracted=True,
-                    )
-                )
-
-            if new_terms:
-                session.add_all(new_terms)
-                session.flush()
-                link_dates_for_record(session, record, dataset)
-                auto_link_entities_for_record(session, record, dataset)
+            auto_terms = session.exec(select(SourceTerm).where(
+                SourceTerm.record_id == record.id,
+                SourceTerm.automatically_extracted == True,  # noqa: E712
+            )).all()
+            for term in auto_terms:
+                session.delete(term)
+            session.flush()
+            save_service_response(session, record, dataset, result, list(label_map.values()))
 
             job.completed += 1
             job.updated_at = datetime.now(timezone.utc)
