@@ -704,6 +704,8 @@ export interface ModelDetailResponse {
     reviewed_label_distribution?: { [label: string]: number };
     total_steps?: number;
     val_ratio?: number;
+    validation_source?: "saved" | "datasets" | "split";
+    eval_size?: number;
   } | null;
   labels: string[];
   per_label_trained: { [label: string]: { [metric: string]: number } };

@@ -84,7 +84,14 @@ const LineChart = ({
     tooltipXAxisFormatter ?? xAxisFormatter;
 
   const option: EChartsOption = {
-    grid: { left: 8, right: 16, top: showLegend ? 36 : 16, bottom: 8, containLabel: true },
+    grid: {
+      left: 8,
+      right: 16,
+      top: showLegend ? 36 : 16,
+      bottom: 8,
+      outerBoundsMode: "same",
+      outerBoundsContain: "all",
+    },
     legend: showLegend ? { top: 0 } : undefined,
     tooltip: {
       trigger: "axis",
@@ -102,6 +109,8 @@ const LineChart = ({
         ? {
             type: "value",
             name: xName,
+            nameLocation: "middle",
+            nameGap: 28,
             axisLabel: xAxisFormatter
               ? {
                   formatter: (value: number) =>
@@ -113,6 +122,8 @@ const LineChart = ({
             type: "category",
             data: xData.map(String),
             name: xName,
+            nameLocation: "middle",
+            nameGap: 28,
             boundaryGap: false,
             axisLabel: xAxisFormatter
               ? {
@@ -124,6 +135,8 @@ const LineChart = ({
     yAxis: {
       type: "value",
       name: yName,
+      nameLocation: "middle",
+      nameGap: 52,
       min: yMin,
       max: yMax,
       axisLabel: valueFormatter ? { formatter: (value: number) => valueFormatter(value) } : undefined,

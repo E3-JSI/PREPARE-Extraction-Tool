@@ -120,8 +120,53 @@ export const ModelDetail = ({
   const labelDist = stats?.label_distribution ?? {};
   const distLabels = Object.keys(labelDist);
 
+  const validationPercent =
+    stats?.val_ratio == null ? null : Math.round(stats.val_ratio * 100);
+
+  const validationLabels = {
+    saved: "Saved validation set",
+    datasets: "Evaluation datasets",
+    split:
+      validationPercent == null
+        ? "Held-out split"
+        : `Held-out split (${100 - validationPercent}/${validationPercent})`,
+  };
+
+  let trainingValidation: string | null = null;
+  if (stats?.eval_size === 0) {
+    trainingValidation = "No validation";
+  } else if (stats?.eval_size != null && stats.validation_source) {
+    const count = stats.eval_size;
+    const label = validationLabels[stats.validation_source];
+    const unit = count === 1 ? "document" : "documents";
+    trainingValidation = `${label} · ${count.toLocaleString()} ${unit}`;
+  }
+
   return (
     <div className={styles.detail}>
+      {(detail.base_model || trainingValidation) && (
+        <Card title="Model overview">
+          <div className={styles.statsGrid}>
+            {detail.base_model && (
+              <div className={styles.statItem}>
+                <span className={styles.statLabel}>Base model</span>
+                <span
+                  className={styles.statValue}
+                  style={{ overflowWrap: "anywhere" }}
+                >
+                  {detail.base_model}
+                </span>
+              </div>
+            )}
+            {trainingValidation && (
+              <div className={styles.statItem}>
+                <span className={styles.statLabel}>Training validation</span>
+                <span className={styles.statValue}>{trainingValidation}</span>
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
       {/* ══ Evaluation ══ */}
       <h3 className={styles.groupHeader}>Evaluation</h3>
 
@@ -131,6 +176,8 @@ export const ModelDetail = ({
           <>
             <BarChart
               categories={labels}
+              xName="Entity label"
+              yName="Exact F1"
               height={CHART_HEIGHT}
               yMin={0}
               yMax={1}
