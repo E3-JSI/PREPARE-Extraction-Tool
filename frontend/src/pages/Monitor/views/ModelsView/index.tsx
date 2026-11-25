@@ -146,7 +146,7 @@ export const ModelDetail = ({
     <div className={styles.detail}>
       {(detail.base_model || trainingValidation) && (
         <Card title="Model overview">
-          <div className={styles.statsGrid}>
+          <div className={`${styles.statsGrid} ${styles.overviewGrid}`}>
             {detail.base_model && (
               <div className={styles.statItem}>
                 <span className={styles.statLabel}>Base model</span>

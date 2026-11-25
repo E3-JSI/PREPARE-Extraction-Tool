@@ -170,6 +170,10 @@
   gap: 0.5rem;
 }
 
+.overviewGrid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+}
+
 .statItem {
   display: flex;
   flex-direction: column;
