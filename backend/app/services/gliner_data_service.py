@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple
 
 from sqlmodel import Session, select
 
-from app.models_db import Record, SourceTerm
+from app.models_db import Dataset, Record, SourceTerm
 
 
 def tokenize_text_with_spans(text: str) -> Tuple[List[str], List[Tuple[int, int]]]:
@@ -44,29 +44,96 @@ def tokenize_text(text: str) -> List[str]:
     return tokens
 
 
+def _prepare_reviewed_records(
+    db: Session,
+    records: List[Record],
+    labels: Optional[List[str]] = None,
+) -> List[Dict]:
+    """Convert already-selected reviewed records to GLiNER documents."""
+    if not records:
+        return []
+
+    selected_record_ids = [record.id for record in records]
+    query = select(SourceTerm).where(
+        SourceTerm.record_id.in_(selected_record_ids)
+    )
+
+    if labels:
+        query = query.where(SourceTerm.label.in_(labels))
+
+    terms_by_record: Dict[int, List[SourceTerm]] = {}
+    for term in db.exec(query).all():
+        terms_by_record.setdefault(term.record_id, []).append(term)
+
+    training_data: List[Dict] = []
+
+    for record in records:
+        text = record.text or ""
+        if not text.strip():
+            continue
+
+        tokens, spans = tokenize_text_with_spans(text)
+        if not tokens:
+            continue
+
+        token_starts = {
+            start: index
+            for index, (start, end) in enumerate(spans)
+        }
+        token_ends = {
+            end: index
+            for index, (start, end) in enumerate(spans)
+        }
+
+        ner: List[List] = []
+        valid_record = True
+
+        for term in terms_by_record.get(record.id, []):
+            char_start = term.start_position
+            char_end = term.end_position
+
+            if (
+                char_start is None
+                or char_end is None
+                or not term.label
+                or not term.label.strip()
+                or char_start not in token_starts
+                or char_end not in token_ends
+                or char_start >= char_end
+            ):
+                valid_record = False
+                break
+
+            ner.append(
+                [
+                    token_starts[char_start],
+                    token_ends[char_end],
+                    term.label,
+                ]
+            )
+
+        if not valid_record:
+            continue
+
+        ner.sort(key=lambda span: (span[0], span[1], span[2]))
+
+        training_data.append(
+            {
+                "record_id": record.id,
+                "tokenized_text": tokens,
+                "ner": ner,
+            }
+        )
+
+    return training_data
+
+
 def load_reviewed_training_data(
     db: Session,
     dataset_ids: List[int],
     labels: Optional[List[str]] = None,
 ) -> List[Dict]:
-    """Build GLiNER training data from reviewed records across datasets.
-
-    Only records with ``reviewed=True`` are considered. Each source term with
-    valid character offsets is mapped onto the record's token sequence and
-    emitted as an inclusive ``[start_token, end_token, label]`` triple. Records
-    that produce no valid spans are skipped.
-
-    Args:
-        db (Session): Active database session.
-        dataset_ids (List[int]): Identifiers of the datasets to build training
-            data from. Reviewed records across all of them are aggregated.
-        labels (Optional[List[str]]): If provided, only source terms whose label
-            is in this list are included.
-
-    Returns:
-        List[Dict]: A list of ``{"tokenized_text": List[str], "ner": List[List]}``
-            training examples.
-    """
+    """Prepare eligible reviewed documents from selected datasets."""
     if not dataset_ids:
         return []
 
@@ -74,70 +141,38 @@ def load_reviewed_training_data(
         select(Record)
         .where(Record.dataset_id.in_(dataset_ids))
         .where(Record.reviewed == True)  # noqa: E712
+        .order_by(Record.id)
     ).all()
 
-    if not records:
+    return _prepare_reviewed_records(db, records, labels)
+
+
+def load_reviewed_records_by_ids(
+    db: Session,
+    record_ids: List[int],
+    user_id: int,
+    labels: Optional[List[str]] = None,
+) -> List[Dict]:
+    """Load every saved validation document by its exact record ID."""
+    requested_ids = sorted(set(record_ids))
+    if not requested_ids:
         return []
 
-    record_ids = [r.id for r in records]
+    records = db.exec(
+        select(Record)
+        .join(Dataset, Record.dataset_id == Dataset.id)
+        .where(Record.id.in_(requested_ids))
+        .where(Record.reviewed == True)  # noqa: E712
+        .where(Dataset.user_id == user_id)
+        .order_by(Record.id)
+    ).all()
 
-    query = (
-        select(SourceTerm)
-        .where(SourceTerm.record_id.in_(record_ids))
-        .where(SourceTerm.start_position.is_not(None))
-        .where(SourceTerm.end_position.is_not(None))
-    )
+    training_data = _prepare_reviewed_records(db, records, labels)
+    loaded_ids = {item["record_id"] for item in training_data}
 
-    if labels:
-        query = query.where(SourceTerm.label.in_(labels))
-
-    source_terms = db.exec(query).all()
-
-    terms_by_record: Dict[int, List[SourceTerm]] = {}
-    for term in source_terms:
-        terms_by_record.setdefault(term.record_id, []).append(term)
-
-    training_data: List[Dict] = []
-
-    for record in records:
-        text = record.text or ""
-        if not text:
-            continue
-
-        tokens, spans = tokenize_text_with_spans(text)
-
-        ner: List[List] = []
-        for term in terms_by_record.get(record.id, []):
-            if (
-                term.start_position is None
-                or term.end_position is None
-                or not term.label
-            ):
-                continue
-
-            char_start = int(term.start_position)
-            char_end = int(term.end_position)
-
-            if char_start < 0 or char_end > len(text) or char_start >= char_end:
-                continue
-
-            token_indices = [
-                token_idx
-                for token_idx, (token_start, token_end) in enumerate(spans)
-                if token_start >= char_start and token_end <= char_end
-            ]
-
-            if not token_indices:
-                continue
-
-            ner.append([token_indices[0], token_indices[-1], term.label])
-
-        if ner:
-            training_data.append(
-                {
-                    "tokenized_text": tokens,
-                    "ner": ner,
-                }
-            )
+    if loaded_ids != set(requested_ids):
+        raise ValueError(
+            "Some saved validation documents are missing or no longer eligible."
+        )
 
     return training_data

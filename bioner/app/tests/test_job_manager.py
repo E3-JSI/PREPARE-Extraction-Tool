@@ -100,6 +100,7 @@ def _start(mgr, run_id):
     return mgr.start_job(
         run_id=run_id,
         base_model_path="fake",
+        labels=["DISEASE"],
         training_data=[{"text": "x"}],
     )
 
@@ -192,7 +193,12 @@ def test_eval_loop_stop_check_aborts_promptly():
     # (d) The eval-loop stop check aborts within one item once the stop is set.
     from app.training.gliner_trainer import GLiNERFinetuner
 
-    f = GLiNERFinetuner(run_id=1, base_model_path="x", training_data=[{"text": "a"}])
+    f = GLiNERFinetuner(
+        run_id=1,
+        base_model_path="x",
+        labels=["DISEASE"],
+        training_data=[{"text": "a"}],
+    )
     dataset = [{"text": f"item {i}", "ner": []} for i in range(50)]
 
     model = _StopOnCallModel(f._stop_event, stop_after=1)
@@ -208,7 +214,12 @@ def test_eval_loop_stop_check_aborts_promptly():
 def test_eval_loop_stop_check_bails_before_first_item():
     from app.training.gliner_trainer import GLiNERFinetuner
 
-    f = GLiNERFinetuner(run_id=1, base_model_path="x", training_data=[{"text": "a"}])
+    f = GLiNERFinetuner(
+        run_id=1,
+        base_model_path="x",
+        labels=["DISEASE"],
+        training_data=[{"text": "a"}],
+    )
     f.request_stop()
     dataset = [{"text": f"item {i}", "ner": []} for i in range(10)]
 
@@ -223,7 +234,12 @@ def test_eval_loop_stop_check_bails_before_first_item():
 def test_baseline_evaluation_reraises_stop(monkeypatch):
     from app.training.gliner_trainer import GLiNERFinetuner
 
-    f = GLiNERFinetuner(run_id=1, base_model_path="x", training_data=[{"text": "a"}])
+    f = GLiNERFinetuner(
+        run_id=1,
+        base_model_path="x",
+        labels=["X"],
+        training_data=[{"text": "a"}],
+    )
 
     def _stopped(*args, **kwargs):
         raise _TrainingStopped()
@@ -237,7 +253,12 @@ def test_baseline_evaluation_reraises_stop(monkeypatch):
 def test_baseline_evaluation_swallows_other_errors(monkeypatch):
     from app.training.gliner_trainer import GLiNERFinetuner
 
-    f = GLiNERFinetuner(run_id=1, base_model_path="x", training_data=[{"text": "a"}])
+    f = GLiNERFinetuner(
+        run_id=1,
+        base_model_path="x",
+        labels=["X"],
+        training_data=[{"text": "a"}],
+    )
 
     def _boom(*args, **kwargs):
         raise RuntimeError("baseline blew up")

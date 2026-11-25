@@ -169,18 +169,26 @@ const DatasetOverview = () => {
   };
 
   const handleExtractAll = () => {
-    if (!overview || extraction.isRunning) return;
+    if (
+      !overview ||
+      extraction.isRunning ||
+      !overview.stats.pending_review_count
+    ) {
+      return;
+    }
+
+    const recordCount = overview.stats.pending_review_count;
 
     setConfirmDialog({
       isOpen: true,
       title: "Extract All Terms",
-      message: `This will extract terms from all ${overview.stats.total_records} record${overview.stats.total_records !== 1 ? "s" : ""} in the dataset. This may take several minutes. Continue?`,
+      message: `This will extract terms from ${recordCount} unreviewed record${recordCount !== 1 ? "s" : ""} in the dataset. This may take several minutes. Continue?`,
       variant: "warning",
       onConfirm: async () => {
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
         try {
           await extraction.startExtraction(overview.dataset.labels);
-          toast.success("Terms extracted successfully for all records");
+          toast.success("Term extraction completed");
           const data = await api.getDatasetOverview(parsedDatasetId);
           if (mountedRef.current) setOverview(data);
         } catch (err) {

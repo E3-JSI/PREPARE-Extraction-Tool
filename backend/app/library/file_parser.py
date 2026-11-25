@@ -7,7 +7,7 @@ from typing import Sequence, Tuple
 from pathlib import Path
 
 from dateutil import parser
-from datetime import datetime
+from datetime import datetime, timezone
 import ijson
 
 from fastapi import HTTPException, status
@@ -23,8 +23,14 @@ from app.models_db import Record, Concept, Cluster
 def _safe_parse_datetime(value):
     if not value:
         return None
+
     try:
-        return parser.parse(value)
+        parsed = parser.parse(value)
+
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return parsed.replace(tzinfo=timezone.utc)
+
+        return parsed
     except (ValueError, TypeError):
         return None
 

@@ -12,6 +12,8 @@ import type {
   MonitorRun,
   RunUpdate,
   TrainingMetric,
+  LearningCurveResponse,
+  ValidationSetSummary
 } from "types";
 
 // Note: auth is injected automatically by `apiRequest` from localStorage.
@@ -104,11 +106,27 @@ export function getModelDetail(modelId: number) {
   return apiRequest<ModelDetailResponse>(`/bioner/models/${modelId}/detail`);
 }
 
+/** Comparable completed runs for the selected model's learning curve. */
+export function getLearningCurve(modelId: number) {
+  return apiRequest<LearningCurveResponse>(
+    `/bioner/models/${modelId}/learning-curve`
+  );
+}
+
 /* ---------------- TRAINING ---------------- */
+/** Newest saved validation set suggested for a base model. */
+export function getLatestValidationSet(baseModel: string) {
+  return apiRequest<ValidationSetSummary | null>(
+    `/bioner/training/validation-sets/latest?base_model=${encodeURIComponent(
+      baseModel.trim()
+    )}`
+  );
+}
 
 export function startTraining(payload: {
   dataset_ids: number[];
   eval_dataset_ids: number[];
+  validation_set_id: number | null;
   labels: string[];
   base_model: string;
   val_ratio: number;
@@ -121,6 +139,7 @@ export function startTraining(payload: {
     body: JSON.stringify({
       dataset_ids: payload.dataset_ids,
       eval_dataset_ids: payload.eval_dataset_ids,
+      validation_set_id: payload.validation_set_id,
       labels: payload.labels,
       base_model: payload.base_model,
       val_ratio: payload.val_ratio,

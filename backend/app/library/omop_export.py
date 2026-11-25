@@ -72,6 +72,8 @@ def _query_export_rows(
         .outerjoin(LinkedTerm, SourceTermLink.to_term_id == LinkedTerm.id)
         .outerjoin(LinkedCluster, LinkedTerm.cluster_id == LinkedCluster.id)
         .where(Record.dataset_id == dataset_id)
+        .where(Record.reviewed == True)  # noqa: E712
+        .where(SourceToConceptMap.status == "approved")
     )
 
     if status_filter:

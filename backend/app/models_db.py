@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Column, JSON
+from sqlalchemy import Column, Index, JSON
 from sqlmodel import SQLModel, Field, Relationship
 
 # ================================================
@@ -112,6 +112,57 @@ class ModelTrainRecordLink(SQLModel, table=True):
     record_id: Optional[int] = Field(
         default=None, foreign_key="record.id", primary_key=True
     )
+
+class ValidationSetRecordLink(SQLModel, table=True):
+    """Associate a shared validation set with its documents."""
+
+    __tablename__ = "validation_set_record_link"
+
+    validation_set_id: Optional[int] = Field(
+        default=None,
+        foreign_key="validation_set.id",
+        primary_key=True,
+        ondelete="CASCADE",
+    )
+    record_id: Optional[int] = Field(
+        default=None,
+        foreign_key="record.id",
+        primary_key=True,
+        ondelete="RESTRICT",
+    )
+
+
+class ValidationSet(SQLModel, table=True):
+    """An immutable validation document set shared by comparable runs."""
+
+    __tablename__ = "validation_set"
+    __table_args__ = (
+        Index(
+            "ix_validation_set_user_base_model_created_at_id",
+            "user_id",
+            "base_model",
+            "created_at",
+            "id",
+        ),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(
+        foreign_key="user.id",
+        ondelete="CASCADE",
+        nullable=False,
+    )
+    base_model: str
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+    records: list["Record"] = Relationship(
+        link_model=ValidationSetRecordLink
+    )
+    models: list["Model"] = Relationship(
+        back_populates="validation_set"
+    )
+
 
 
 class Record(SQLModel, table=True):
@@ -282,6 +333,16 @@ class Model(SQLModel, table=True):
     )
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+    validation_set_id: Optional[int] = Field(
+        default=None,
+        foreign_key="validation_set.id",
+        ondelete="SET NULL",
+        index=True,
+    )
+    validation_set: Optional["ValidationSet"] = Relationship(
+        back_populates="models"
+    )
+
     # Relationship to SourceTermEx (one-to-many)
     # SourceTermEx extracted with this model
     source_terms: list["SourceTermEx"] = Relationship(
@@ -380,6 +441,12 @@ class TrainingRun(SQLModel, table=True):
     # term_count, label_distribution, train_size, eval_size, val_ratio}.
     train_stats: Optional[dict] = Field(
         default=None, sa_column=Column(JSON, nullable=True)
+    )
+    # Per-label evaluation of the starting base model on this run's frozen
+    # validation set. Stored per run so later training runs cannot overwrite it.
+    baseline_per_label: Optional[Dict[str, Dict[str, Any]]] = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
     )
 
     metrics: list["TrainingMetric"] = Relationship(

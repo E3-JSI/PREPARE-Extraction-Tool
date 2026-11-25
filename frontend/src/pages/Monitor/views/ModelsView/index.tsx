@@ -3,16 +3,31 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faCheck, faPen, faRotate, faTrash, faXmark } from "@fortawesome/free-solid-svg-icons";
 
-import { deleteModel, getModelDetail, getRunMetrics, rescanModels, setActiveModel, updateRun } from "@api/monitoring";
+import {
+  deleteModel,
+  getLearningCurve,
+  getModelDetail,
+  getRunMetrics,
+  rescanModels,
+  setActiveModel,
+  updateRun,
+} from "@api/monitoring";
 import Button from "@components/Button";
 import Card from "@components/Card";
 import { ConfirmDialog } from "@components/ConfirmDialog";
 import { BarChart, ChartState, LineChart } from "@components/charts";
-import type { DefaultModelInfo, DiscoveredModelSummary, ModelDetailResponse, TrainingMetric } from "types";
+import type {
+  DefaultModelInfo,
+  DiscoveredModelSummary,
+  LearningCurveResponse,
+  ModelDetailResponse,
+  TrainingMetric,
+} from "types";
 
 import { buildLossSeries, formatEpoch, formatLoss } from "../../chartData";
 import LiveEvalPanel from "../../components/LiveEvalPanel";
 import { useMonitor } from "../../hooks/useMonitor";
+import LearningCurveChart from "./LearningCurveChart";
 import styles from "./styles.module.css";
 
 // ─────────────────────────────────────────────────────────────────
@@ -48,6 +63,8 @@ const activationTooltip = (m: DiscoveredModelSummary, currentEngine: string | nu
 export interface ModelDetailProps {
   detail: ModelDetailResponse | null;
   metrics: TrainingMetric[];
+  learningCurve?: LearningCurveResponse | null;
+  learningCurveLoading?: boolean;
   /** Rendered inside the Evaluation group, after per-label eval (the container
    *  passes `<LiveEvalPanel/>` here so this component stays API-free). */
   liveEval?: ReactNode;
@@ -55,7 +72,13 @@ export interface ModelDetailProps {
 
 /** Renders per-label eval, training stats and loss curve for a trained model.
  *  Pass `detail=null` to show the Default-model empty state. */
-export const ModelDetail = ({ detail, metrics, liveEval }: ModelDetailProps) => {
+export const ModelDetail = ({
+  detail,
+  metrics,
+  learningCurve = null,
+  learningCurveLoading = false,
+  liveEval,
+}: ModelDetailProps) => {
   if (!detail) {
     return (
       <Card title="Model detail">
@@ -97,8 +120,53 @@ export const ModelDetail = ({ detail, metrics, liveEval }: ModelDetailProps) => 
   const labelDist = stats?.label_distribution ?? {};
   const distLabels = Object.keys(labelDist);
 
+  const validationPercent =
+    stats?.val_ratio == null ? null : Math.round(stats.val_ratio * 100);
+
+  const validationLabels = {
+    saved: "Saved validation set",
+    datasets: "Evaluation datasets",
+    split:
+      validationPercent == null
+        ? "Held-out split"
+        : `Held-out split (${100 - validationPercent}/${validationPercent})`,
+  };
+
+  let trainingValidation: string | null = null;
+  if (stats?.eval_size === 0) {
+    trainingValidation = "No validation";
+  } else if (stats?.eval_size != null && stats.validation_source) {
+    const count = stats.eval_size;
+    const label = validationLabels[stats.validation_source];
+    const unit = count === 1 ? "document" : "documents";
+    trainingValidation = `${label} · ${count.toLocaleString()} ${unit}`;
+  }
+
   return (
     <div className={styles.detail}>
+      {(detail.base_model || trainingValidation) && (
+        <Card title="Model overview">
+          <div className={`${styles.statsGrid} ${styles.overviewGrid}`}>
+            {detail.base_model && (
+              <div className={styles.statItem}>
+                <span className={styles.statLabel}>Base model</span>
+                <span
+                  className={styles.statValue}
+                  style={{ overflowWrap: "anywhere" }}
+                >
+                  {detail.base_model}
+                </span>
+              </div>
+            )}
+            {trainingValidation && (
+              <div className={styles.statItem}>
+                <span className={styles.statLabel}>Training validation</span>
+                <span className={styles.statValue}>{trainingValidation}</span>
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
       {/* ══ Evaluation ══ */}
       <h3 className={styles.groupHeader}>Evaluation</h3>
 
@@ -108,6 +176,8 @@ export const ModelDetail = ({ detail, metrics, liveEval }: ModelDetailProps) => 
           <>
             <BarChart
               categories={labels}
+              xName="Entity label"
+              yName="Exact F1"
               height={CHART_HEIGHT}
               yMin={0}
               yMax={1}
@@ -151,6 +221,25 @@ export const ModelDetail = ({ detail, metrics, liveEval }: ModelDetailProps) => 
             title="No evaluation data"
             message="Run an evaluation on this model to see per-label scores."
             height={CHART_HEIGHT}
+          />
+        )}
+      </Card>
+
+      {/* Learning curve */}
+      <Card title="Learning curve">
+        {learningCurveLoading ? (
+          <ChartState
+            variant="loading"
+            message="Loading learning curve..."
+            height={CHART_HEIGHT}
+          />
+        ) : (
+          <LearningCurveChart
+            points={learningCurve?.points ?? []}
+            baselineMacroF1={
+              learningCurve?.baseline_macro_f1 ?? null
+            }
+            selectedModelId={detail.model_id}
           />
         )}
       </Card>
@@ -253,6 +342,8 @@ const ModelsView = () => {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<ModelDetailResponse | null>(null);
   const [metrics, setMetrics] = useState<TrainingMetric[]>([]);
+  const [learningCurve, setLearningCurve] = useState<LearningCurveResponse | null>(null);
+  const [loadingLearningCurve, setLoadingLearningCurve] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [rescanning, setRescanning] = useState(false);
 
@@ -277,6 +368,48 @@ const ModelsView = () => {
   useEffect(() => {
     reloadModels().catch(() => toast.showToast("Failed to load models", "error"));
   }, [reloadModels, toast]);
+
+  useEffect(() => {
+    const selectedModel = models.find(
+      (model) => model.id === selectedId
+    );
+
+    if (
+      selectedId == null ||
+      selectedId < 0 ||
+      selectedModel?.run_id == null
+    ) {
+      setLearningCurve(null);
+      setLoadingLearningCurve(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    setLearningCurve(null);
+    setLoadingLearningCurve(true);
+
+    getLearningCurve(selectedId)
+      .then((curve) => {
+        if (!cancelled) {
+          setLearningCurve(curve);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLearningCurve(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingLearningCurve(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, models]);
 
   const handleRescan = useCallback(async () => {
     setRescanning(true);
@@ -527,6 +660,8 @@ const ModelsView = () => {
           <ModelDetail
             detail={detail}
             metrics={metrics}
+            learningCurve={learningCurve}
+            learningCurveLoading={loadingLearningCurve}
             liveEval={<LiveEvalPanel key={selectedId} modelId={selectedId} />}
           />
         )}

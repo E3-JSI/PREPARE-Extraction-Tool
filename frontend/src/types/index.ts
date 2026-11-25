@@ -497,6 +497,14 @@ export interface MonitorDataset {
   name: string;
 }
 
+/** Newest saved validation set suggested for a base model. */
+export interface ValidationSetSummary {
+  validation_set_id: number;
+  base_model: string;
+  record_count: number;
+  created_at: string;
+}
+
 /** A training run with the metadata needed to compare/manage runs. */
 export interface MonitorRun {
   run_id: number;
@@ -642,6 +650,25 @@ export interface TrainingMetric {
   eval_loss?: number | null;
 }
 
+/** One completed training run included in a learning curve. */
+export interface LearningCurvePoint {
+  run_id: number;
+  model_id: number;
+  name?: string | null;
+  num_train_documents: number;
+  macro_f1: number;
+  created_at?: string | null;
+}
+
+/** Comparable runs using the same base model and validation set. */
+export interface LearningCurveResponse {
+  base_model: string;
+  validation_set_id: number;
+  labels: string[];
+  baseline_macro_f1: number | null;
+  points: LearningCurvePoint[];
+}
+
 /** The in-flight training run, used to rehydrate live Monitor progress after
  *  navigating away and back or after a full page reload. Null when idle. */
 export interface ActiveTrainingRun {
@@ -677,6 +704,8 @@ export interface ModelDetailResponse {
     reviewed_label_distribution?: { [label: string]: number };
     total_steps?: number;
     val_ratio?: number;
+    validation_source?: "saved" | "datasets" | "split";
+    eval_size?: number;
   } | null;
   labels: string[];
   per_label_trained: { [label: string]: { [metric: string]: number } };

@@ -19,6 +19,7 @@ export interface BarChartProps {
   height?: number;
   yMin?: number;
   yMax?: number;
+  xName?: string;
   yName?: string;
   showLegend?: boolean;
   /** Rotate x-axis labels by this angle (useful for long category names). */
@@ -32,20 +33,38 @@ const BarChart = ({
   height = 300,
   yMin,
   yMax,
+  xName,
   yName,
   showLegend = true,
   xLabelRotate = 0,
 }: BarChartProps) => {
   const option: EChartsOption = {
-    grid: { left: 8, right: 16, top: showLegend ? 36 : 16, bottom: 8, containLabel: true },
+    grid: {
+      left: 8,
+      right: 16,
+      top: showLegend ? 36 : 16,
+      bottom: 8,
+      outerBoundsMode: "same",
+      outerBoundsContain: "all",
+    },
     legend: showLegend ? { top: 0 } : undefined,
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
     xAxis: {
       type: "category",
       data: categories,
+      name: xName,
+      nameLocation: "middle",
+      nameGap: 28,
       axisLabel: { rotate: xLabelRotate, interval: 0 },
     },
-    yAxis: { type: "value", name: yName, min: yMin, max: yMax },
+    yAxis: {
+      type: "value",
+      name: yName,
+      nameLocation: "middle",
+      nameGap: 40,
+      min: yMin,
+      max: yMax,
+    },
     series: series.map((s) => ({
       name: s.name,
       type: "bar",

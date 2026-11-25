@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, status
 from huggingface_hub import model_info
 from pydantic import BaseModel
@@ -13,6 +15,7 @@ class TrainingStartRequest(BaseModel):
     Attributes:
         run_id (int): Backend-assigned training run identifier.
         base_model (str): HuggingFace GLiNER model path to fine-tune.
+        labels (list[str]): Entity labels selected for this training run.
         training_data (list[dict]): Training samples, each
             ``{"tokenized_text": [...], "ner": [[start_tok, end_tok, label], ...]}``.
         eval_data (list[dict]): Optional evaluation samples in the same format.
@@ -28,6 +31,7 @@ class TrainingStartRequest(BaseModel):
 
     run_id: int
     base_model: str
+    labels: list[str]
     training_data: list[dict]
     eval_data: list[dict] = []
     num_epochs: int = 4
@@ -41,6 +45,9 @@ class TrainingStartRequest(BaseModel):
 # MODEL VALIDATION
 # ==============================
 def validate_model(model: str) -> bool:
+    if Path(model).is_dir():
+        return True
+
     try:
         model_info(model)
         return True
@@ -58,7 +65,7 @@ async def start_training(request: TrainingStartRequest):
             detail={
                 "error": "INVALID_MODEL",
                 "message": f"Model not found: {request.base_model}",
-                "suggestion": "Please select a valid HuggingFace GLiNER model"
+                "suggestion": "Please select a valid local GLiNER directory or Hugging Face GLiNER model"
             }
         )
 
@@ -67,6 +74,7 @@ async def start_training(request: TrainingStartRequest):
     result = manager.start_job(
         run_id=request.run_id,
         base_model_path=request.base_model,
+        labels=request.labels,
         training_data=request.training_data,
         eval_data=request.eval_data,
         device=request.device,

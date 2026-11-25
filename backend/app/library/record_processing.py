@@ -30,8 +30,13 @@ def _normalize_date_text(s: str) -> str:
 
 def _safe_datetime(year: int, month: int, day: int) -> Optional[datetime.datetime]:
     try:
-        return datetime.datetime(year, month, day)
-    except Exception:
+        return datetime.datetime(
+            year,
+            month,
+            day,
+            tzinfo=datetime.timezone.utc,
+        )
+    except ValueError:
         return None
 
 
@@ -56,7 +61,7 @@ def _clamp_to_visit_date(
         return None
 
     base_dt = _visit_date_to_datetime(visit_date)
-    if base_dt is not None and parsed_dt > base_dt:
+    if base_dt is not None and parsed_dt.date() > base_dt.date():
         return None
 
     return parsed_dt

@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import classNames from "classnames";
 
-import { getModels } from "@api/monitoring";
+import { getLatestValidationSet, getModels } from "@api/monitoring";
 import Button from "@components/Button";
 import Card from "@components/Card";
 import ProgressBar from "@components/ProgressBar";
 import Select from "@components/Select";
 import StatCard from "@components/StatCard";
-import type { ModelSummary } from "types";
+import type { ModelSummary, ValidationSetSummary } from "types";
 
 import LabelSelector from "../../LabelSelector";
 import TrainingLossChart from "../../charts/TrainingLossChart";
@@ -51,11 +51,13 @@ const VRAM_TOOLTIP =
   "Approximate peak GPU VRAM to fine-tune at the default batch size (8). Actual usage varies with batch size and sequence length.";
 
 const SPLIT_OPTIONS = [
-  { value: "0", label: "No split (100% train)" },
+  { value: "0", label: "100 / 0 (no validation)" },
   { value: "0.1", label: "90 / 10" },
   { value: "0.2", label: "80 / 20" },
   { value: "0.3", label: "70 / 30" },
 ];
+const SAVED_VALIDATION_SET_VALUE = "__saved_validation_set__";
+const HELD_OUT_SPLIT_VALUE = "__held_out_split__";
 
 // Pre-training → training phases surfaced in the progress stepper, in order.
 // The `phase` values match the backend derivation and the MonitorProvider WS
@@ -116,6 +118,76 @@ const TrainingView = () => {
   const inPreTraining = trainingPhase != null && trainingPhase !== "training";
 
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [recommendedValidationSet, setRecommendedValidationSet] =
+    useState<ValidationSetSummary | null>(null);
+  const [selectedValidationSetId, setSelectedValidationSetId] =
+    useState<number | null>(null);
+  const [showValidationOptions, setShowValidationOptions] =
+    useState(false);
+  const [isValidationSetLoading, setIsValidationSetLoading] =
+    useState(false);
+  const [validationSetLookupFailed, setValidationSetLookupFailed] =
+    useState(false);
+  const [validationSetRefreshKey, setValidationSetRefreshKey] =
+    useState(0);
+
+  const resolvedModel = (
+    useCustomModel ? customModel : baseModel
+  ).trim();
+
+  useEffect(() => {
+    const normalizedModel = resolvedModel.trim();
+    let cancelled = false;
+
+    setRecommendedValidationSet(null);
+    setSelectedValidationSetId(null);
+    setEvalDatasetIds([]);
+    setShowValidationOptions(false);
+    setValidationSetLookupFailed(false);
+
+    if (!normalizedModel) {
+      setIsValidationSetLoading(false);
+      setShowValidationOptions(true);
+      return;
+    }
+
+    setIsValidationSetLoading(true);
+
+    const timeoutId = window.setTimeout(() => {
+      getLatestValidationSet(normalizedModel)
+        .then((validationSet) => {
+          if (cancelled) return;
+
+          setRecommendedValidationSet(validationSet);
+          setSelectedValidationSetId(
+            validationSet?.validation_set_id ?? null
+          );
+          setShowValidationOptions(validationSet === null);
+        })
+        .catch(() => {
+          if (cancelled) return;
+
+          setRecommendedValidationSet(null);
+          setSelectedValidationSetId(null);
+          setValidationSetLookupFailed(true);
+          setShowValidationOptions(false);
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setIsValidationSetLoading(false);
+          }
+        });
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    resolvedModel,
+    setEvalDatasetIds,
+    validationSetRefreshKey,
+  ]);
 
   // Locally-available GLiNER models (discovered + trained) usable as a base
   // model. Only gliner-engine local folders are valid GLiNER training bases.
@@ -137,10 +209,84 @@ const TrainingView = () => {
 
   const selectedBaseline = GLINER_BASELINES.find((b) => b.value === baseModel);
 
-  const datasetOptions = datasets.map((d) => ({ value: String(d.id), label: d.name }));
-  // Eval datasets are distinct from training datasets (overlaps are dropped server-side).
-  const evalOptions = datasetOptions.filter((o) => !trainingDatasetIds.includes(Number(o.value)));
+  const datasetOptions = datasets.map((d) => ({
+    value: String(d.id),
+    label: d.name,
+  }));
+
+  // Eval datasets are distinct from training datasets.
+  const evalOptions = datasetOptions.filter(
+    (option) => !trainingDatasetIds.includes(Number(option.value))
+  );
+
   const hasEvalDatasets = evalDatasetIds.length > 0;
+  const usingSavedValidationSet = selectedValidationSetId !== null;
+
+  const validationOptions = [
+    ...(recommendedValidationSet
+      ? [
+          {
+            value: SAVED_VALIDATION_SET_VALUE,
+            label: `Saved validation set · ${recommendedValidationSet.record_count.toLocaleString()} documents`,
+          },
+        ]
+      : []),
+    {
+      value: HELD_OUT_SPLIT_VALUE,
+      label: "Held-out split of training data",
+    },
+    ...evalOptions,
+  ];
+
+  const validationValues = usingSavedValidationSet
+    ? [SAVED_VALIDATION_SET_VALUE]
+    : hasEvalDatasets
+      ? evalDatasetIds.map(String)
+      : [HELD_OUT_SPLIT_VALUE];
+
+  const handleValidationValuesChange = (values: string[]) => {
+    const addedValue = values.find(
+      (value) => !validationValues.includes(value)
+    );
+
+    if (
+      addedValue === SAVED_VALIDATION_SET_VALUE &&
+      recommendedValidationSet
+    ) {
+      setSelectedValidationSetId(
+        recommendedValidationSet.validation_set_id
+      );
+      setEvalDatasetIds([]);
+      setShowValidationOptions(false);
+      return;
+    }
+
+    if (addedValue === HELD_OUT_SPLIT_VALUE) {
+      setSelectedValidationSetId(null);
+      setEvalDatasetIds([]);
+      return;
+    }
+
+    const datasetIds = values
+      .filter(
+        (value) =>
+          value !== SAVED_VALIDATION_SET_VALUE &&
+          value !== HELD_OUT_SPLIT_VALUE
+      )
+      .map(Number)
+      .filter(Number.isInteger);
+
+    setSelectedValidationSetId(null);
+    setEvalDatasetIds(datasetIds);
+  };
+
+  const handleStartTraining = async () => {
+    const started = await startTraining(selectedValidationSetId);
+
+    if (started) {
+      setValidationSetRefreshKey((key) => key + 1);
+    }
+  };
 
   return (
     <div className={styles.view}>
@@ -152,26 +298,87 @@ const TrainingView = () => {
             <Select
               multiSelect
               values={trainingDatasetIds.map(String)}
-              onValuesChange={(vals) => setTrainingDatasetIds(vals.map(Number))}
+              onValuesChange={(vals) => {
+                const nextTrainingDatasetIds = vals.map(Number);
+
+                setTrainingDatasetIds(nextTrainingDatasetIds);
+                setEvalDatasetIds(
+                  evalDatasetIds.filter(
+                    (datasetId) => !nextTrainingDatasetIds.includes(datasetId)
+                  )
+                );
+              }}
               options={datasetOptions}
               placeholder="Select datasets…"
             />
           </div>
 
           <div className={styles.field}>
-            <p className={styles.field__label}>Evaluation datasets (optional)</p>
-            <Select
-              multiSelect
-              values={evalDatasetIds.map(String)}
-              onValuesChange={(vals) => setEvalDatasetIds(vals.map(Number))}
-              options={evalOptions}
-              placeholder="Held-out split of training data"
-            />
-            <p className={styles.hint}>
-              {hasEvalDatasets
-                ? "Evaluating on the selected datasets."
-                : "No eval datasets — a held-out split of the training data is used."}
+            <p className={styles.field__label}>
+              Evaluation datasets (optional)
             </p>
+
+            {isValidationSetLoading ? (
+              <p className={styles.hint}>
+                Checking for a saved validation set...
+              </p>
+            ) : validationSetLookupFailed ? (
+              <div className={styles.validationSummary}>
+                <p className={styles.warning} role="alert">
+                  Could not load the saved validation set.
+                </p>
+                <Button
+                  variant="ghost"
+                  size="small"
+                  onClick={() =>
+                    setValidationSetRefreshKey((key) => key + 1)
+                  }
+                >
+                  Retry
+                </Button>
+              </div>
+            ) : recommendedValidationSet &&
+              usingSavedValidationSet &&
+              !showValidationOptions ? (
+              <div className={styles.validationSummary}>
+                <div>
+                  <p className={styles.validationSummary__title}>
+                    ✓ Saved validation set ·{" "}
+                    {recommendedValidationSet.record_count.toLocaleString()}{" "}
+                    documents
+                  </p>
+                  <p className={styles.hint}>
+                    Reusing this set keeps learning-curve results comparable.
+                  </p>
+                </div>
+
+                <Button
+                  variant="ghost"
+                  size="small"
+                  onClick={() => setShowValidationOptions(true)}
+                >
+                  Change
+                </Button>
+              </div>
+            ) : (
+              <>
+                <Select
+                  multiSelect
+                  values={validationValues}
+                  onValuesChange={handleValidationValuesChange}
+                  options={validationOptions}
+                  placeholder="Choose validation data..."
+                />
+
+                <p className={styles.hint}>
+                  {usingSavedValidationSet
+                    ? "Using the saved validation set."
+                    : hasEvalDatasets
+                      ? "Evaluating on the selected datasets."
+                      : "A held-out split of the training data will be used."}
+                </p>
+              </>
+            )}
           </div>
         </div>
       </Card>
@@ -291,9 +498,22 @@ const TrainingView = () => {
                 onValueChange={(v) => setValSplitRatio(Number(v))}
                 fullWidth={false}
                 options={SPLIT_OPTIONS}
-                disabled={hasEvalDatasets}
+                disabled={
+                  usingSavedValidationSet ||
+                  hasEvalDatasets ||
+                  isValidationSetLoading ||
+                  validationSetLookupFailed
+                }
               />
-              {hasEvalDatasets && <p className={styles.hint}>Ignored while evaluation datasets are selected.</p>}
+              {usingSavedValidationSet ? (
+                <p className={styles.hint}>
+                  Disabled while the saved validation set is selected.
+                </p>
+              ) : hasEvalDatasets ? (
+                <p className={styles.hint}>
+                  Ignored while evaluation datasets are selected.
+                </p>
+              ) : null}
             </div>
 
             {/* Advanced hyperparameters */}
@@ -352,8 +572,14 @@ const TrainingView = () => {
             <div className={styles.actions}>
               <Button
                 variant="primary"
-                onClick={startTraining}
-                disabled={isTraining || trainingDatasetIds.length === 0}
+                onClick={handleStartTraining}
+                disabled={
+                  isTraining ||
+                  trainingDatasetIds.length === 0 ||
+                  isValidationSetLoading ||
+                  validationSetLookupFailed ||
+                  !resolvedModel
+                }
               >
                 Start
               </Button>

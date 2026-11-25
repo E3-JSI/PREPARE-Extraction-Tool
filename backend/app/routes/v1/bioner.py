@@ -54,6 +54,9 @@ from app.schemas import (
     TrainingRunSummary,
     TrainingRunUpdate,
     TrainingStartResponse,
+    ValidationSetSummary,
+    LearningCurvePoint,
+    LearningCurveResponse,
     create_pagination_metadata,
 )
 import app.services.extraction_lock as extraction_lock
@@ -62,6 +65,7 @@ from app.services import (
     evaluation_service,
     gliner_data_service,
     training_service,
+    training_split_service,
 )
 from app.services.websocket_manager import manager
 
@@ -826,11 +830,9 @@ def model_detail(
         eval_ids = training_service.get_dataset_ids(db, run.id, role="eval") or []
         train_stats = run.train_stats
         labels = run.labels or []
-        baseline = training_service.get_baseline_model(db, run.dataset_id)
-        if baseline is not None:
-            per_label_baseline = _scores_only(
-                evaluation_service.get_per_label(db, baseline.id)
-            )
+        per_label_baseline = _scores_only(
+            run.baseline_per_label or {}
+        )
     return ModelDetailResponse(
         model_id=model.id,
         run_id=run.id if run else None,
@@ -841,6 +843,141 @@ def model_detail(
         labels=labels,
         per_label_trained=per_label_trained,
         per_label_baseline=per_label_baseline,
+    )
+
+
+@router.get(
+    "/models/{model_id}/learning-curve",
+    response_model=LearningCurveResponse,
+)
+def model_learning_curve(
+    model_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Return comparable completed runs for a model's learning curve."""
+    model = db.get(Model, model_id)
+    if model is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model not found",
+        )
+
+    target_run = model.training_run
+    if target_run is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Learning curves are only available for trained models",
+        )
+
+    dataset = db.get(Dataset, target_run.dataset_id)
+    if dataset is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Training dataset not found",
+        )
+
+    if dataset.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this model",
+        )
+
+    if target_run.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Learning curves are only available for completed runs",
+        )
+
+    validation_set = model.validation_set
+    if model.validation_set_id is None or validation_set is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This model has no saved validation set",
+        )
+
+    if validation_set.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this validation set",
+        )
+
+    def normalize_labels(labels: Optional[List[str]]) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    label.strip()
+                    for label in labels or []
+                    if isinstance(label, str) and label.strip()
+                }
+            )
+        )
+
+    target_labels = normalize_labels(target_run.labels)
+    target_base_model = target_run.base_model.strip()
+
+    baseline_macro_f1 = evaluation_service.compute_macro_f1(
+        target_run.baseline_per_label or {}
+    )
+
+    comparable_runs = db.exec(
+        select(TrainingRun)
+        .join(Model, TrainingRun.model_id == Model.id)
+        .join(Dataset, TrainingRun.dataset_id == Dataset.id)
+        .where(Dataset.user_id == current_user.id)
+        .where(TrainingRun.status == "completed")
+        .where(Model.validation_set_id == model.validation_set_id)
+    ).all()
+
+    points: list[LearningCurvePoint] = []
+
+    for run in comparable_runs:
+        if run.base_model.strip() != target_base_model:
+            continue
+
+        if normalize_labels(run.labels) != target_labels:
+            continue
+
+        if run.id is None or run.model_id is None:
+            continue
+
+        train_size = (run.train_stats or {}).get("train_size")
+        if type(train_size) is not int or train_size <= 0:
+            continue
+
+        per_label = evaluation_service.get_per_label(
+            db,
+            run.model_id,
+        )
+        macro_f1 = evaluation_service.compute_macro_f1(per_label)
+
+        if macro_f1 is None:
+            continue
+
+        points.append(
+            LearningCurvePoint(
+                run_id=run.id,
+                model_id=run.model_id,
+                name=run.name,
+                num_train_documents=train_size,
+                macro_f1=macro_f1,
+                created_at=run.created_at,
+            )
+        )
+
+    points.sort(
+        key=lambda point: (
+            point.num_train_documents,
+            point.run_id,
+        )
+    )
+
+    return LearningCurveResponse(
+        base_model=target_run.base_model,
+        validation_set_id=model.validation_set_id,
+        labels=target_run.labels or [],
+        baseline_macro_f1=baseline_macro_f1,
+        points=points,
     )
 
 
@@ -978,6 +1115,44 @@ def _reconcile_run_liveness(db: Session, run: TrainingRun) -> bool:
     return False
 
 
+@router.get(
+    "/training/validation-sets/latest",
+    response_model=Optional[ValidationSetSummary],
+)
+def latest_validation_set(
+    base_model: str = Query(..., min_length=1),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Return the newest saved validation set for a base model."""
+    normalized_base_model = base_model.strip()
+
+    if not normalized_base_model:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A base model is required.",
+        )
+
+    validation_set = training_service.get_latest_validation_set(
+        db,
+        current_user.id,
+        normalized_base_model,
+    )
+
+    if validation_set is None or validation_set.id is None:
+        return None
+
+    return ValidationSetSummary(
+        validation_set_id=validation_set.id,
+        base_model=validation_set.base_model,
+        record_count=training_service.count_validation_set_records(
+            db,
+            validation_set.id,
+        ),
+        created_at=validation_set.created_at,
+    )
+
+
 @router.post("/training/start", response_model=TrainingStartResponse)
 def start_training(
     req: GLiNERTrainingRequest,
@@ -987,6 +1162,40 @@ def start_training(
     # ``req.dataset_ids`` is resolved + de-duplicated by the schema validator.
     train_ids = req.dataset_ids
     eval_ids = req.eval_dataset_ids
+
+    selected_validation_set = None
+
+    if req.validation_set_id is not None:
+        selected_validation_set = (
+            training_service.get_validation_set_by_id(
+                db,
+                validation_set_id=req.validation_set_id,
+                user_id=current_user.id,
+                base_model=req.base_model,
+            )
+        )
+
+        if selected_validation_set is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "Saved validation set not found "
+                    "for this base model."
+                ),
+            )
+
+    if selected_validation_set is not None:
+        validation_source = "saved"
+    elif eval_ids:
+        validation_source = "datasets"
+    else:
+        validation_source = "split"
+
+    effective_val_ratio = (
+        req.val_ratio
+        if validation_source == "split"
+        else 0.0
+    )
 
     # Verify the caller owns every selected dataset (train + eval).
     for dsid in [*train_ids, *eval_ids]:
@@ -1021,34 +1230,136 @@ def start_training(
         "train_dataset_ids": train_ids,
         "eval_dataset_ids": eval_ids,
         **_compute_dataset_stats(db, train_ids),
-        "val_ratio": req.val_ratio,
+        "val_ratio": effective_val_ratio,
+        "validation_source": validation_source,
+        "validation_set_id": (
+            selected_validation_set.id
+            if selected_validation_set is not None
+            else None
+        ),
     }
     run = training_service.create_run(
         db,
         dataset_ids=train_ids,
         base_model=req.base_model,
         labels=req.labels,
-        val_ratio=req.val_ratio,
+        val_ratio=effective_val_ratio,
         eval_dataset_ids=eval_ids,
         train_stats=train_stats_snapshot,
     )
     try:
-        training_data = gliner_data_service.load_reviewed_training_data(
-            db, train_ids, req.labels
+        available_training_data = (
+            gliner_data_service.load_reviewed_training_data(
+                db,
+                train_ids,
+                req.labels,
+            )
         )
-        # Separate eval datasets override the held-out split when provided.
-        eval_data = (
-            gliner_data_service.load_reviewed_training_data(db, eval_ids, req.labels)
-            if eval_ids
-            else []
+        if not available_training_data:
+            raise ValueError(
+                "No eligible reviewed training documents were found."
+            )
+
+        validation_set = selected_validation_set
+
+        if validation_set is not None:
+            validation_record_ids = [
+                record.id
+                for record in validation_set.records
+                if record.id is not None
+            ]
+            if not validation_record_ids:
+                raise ValueError("The saved validation set is empty.")
+
+            validation_data = (
+                gliner_data_service.load_reviewed_records_by_ids(
+                    db,
+                    validation_record_ids,
+                    current_user.id,
+                    req.labels,
+                )
+            )
+
+            validation_id_set = set(validation_record_ids)
+            training_data = [
+                document
+                for document in available_training_data
+                if document["record_id"] not in validation_id_set
+            ]
+        else:
+            if eval_ids:
+                training_data = available_training_data
+                validation_data = (
+                    gliner_data_service.load_reviewed_training_data(
+                        db,
+                        eval_ids,
+                        req.labels,
+                    )
+                )
+
+                if not validation_data:
+                    raise ValueError(
+                        "No eligible reviewed validation documents were found."
+                    )
+            else:
+                training_data, validation_data = (
+                    training_split_service.split_training_documents(
+                        available_training_data,
+                        effective_val_ratio,
+                        req.labels,
+                    )
+                )
+
+            if validation_data:
+                validation_set = training_service.create_validation_set(
+                    db,
+                    user_id=current_user.id,
+                    base_model=req.base_model,
+                    record_ids=[
+                        document["record_id"]
+                        for document in validation_data
+                    ],
+                )
+
+        if not training_data:
+            raise ValueError(
+                "No training documents remain after removing "
+                "validation documents."
+            )
+
+        validation_set_id = (
+            validation_set.id
+            if validation_set is not None
+            else None
         )
+
+        training_service.save_training_assignment(
+            db,
+            run_id=run.id,
+            train_record_ids=[
+                document["record_id"]
+                for document in training_data
+            ],
+            validation_set_id=validation_set_id,
+        )
+
+        run.train_stats = {
+            **(run.train_stats or {}),
+            "train_size": len(training_data),
+            "eval_size": len(validation_data),
+            "validation_set_id": validation_set_id,
+        }
+        db.add(run)
+        db.commit()
+
         bioner_client.start_training(
             {
                 "run_id": run.id,
                 "base_model": req.base_model,
+                "labels": req.labels,
                 "training_data": training_data,
-                "eval_data": eval_data,
-                "val_ratio": req.val_ratio,
+                "eval_data": validation_data,
+                "val_ratio": 0.0,
                 "num_epochs": req.num_epochs,
                 "learning_rate": req.learning_rate,
                 "train_batch_size": req.train_batch_size,
@@ -1068,6 +1379,16 @@ def start_training(
                 detail=_bioner_conflict_detail(resp),
             ) from exc
         training_service.fail_run(db, run.id, f"failed to start trainer: {exc}")
+
+    except ValueError as exc:
+        message = str(exc)
+        training_service.fail_run(db, run.id, message)
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=message,
+        ) from exc
+
     except Exception as exc:  # trainer unreachable -> mark failed, but still return run
         training_service.fail_run(db, run.id, f"failed to start trainer: {exc}")
     return TrainingStartResponse(run_id=run.id)

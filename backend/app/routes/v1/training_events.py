@@ -1,13 +1,11 @@
 """Internal callback endpoint receiving training lifecycle events from the trainer."""
 
 import logging
-from typing import List
 
 from fastapi import APIRouter, Depends
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from app.core.database import get_session
-from app.models_db import Record, TrainingRun
 from app.services import training_service
 from app.services.websocket_manager import manager
 
@@ -68,21 +66,10 @@ async def receive_training_event(payload: dict, db: Session = Depends(get_sessio
         per_label = metrics.get("per_label") or {}
         training_service.record_evaluation(db, run_id, per_label)
     elif event_type == "completed":
-        run = db.get(TrainingRun, run_id)
-        record_ids: List[int] = []
-        if run is not None:
-            # Link every record across the run's training datasets. Fall back to
-            # the primary dataset if no link rows exist (legacy/back-compat).
-            train_dataset_ids = training_service.get_dataset_ids(
-                db, run_id, role="train"
-            ) or [run.dataset_id]
-            record_ids = list(
-                db.exec(
-                    select(Record.id).where(Record.dataset_id.in_(train_dataset_ids))
-                ).all()
-            )
         training_service.complete_run(
-            db, run_id, output_path=payload.get("output_path"), record_ids=record_ids
+            db,
+            run_id,
+            output_path=payload.get("output_path"),
         )
     elif event_type == "stopped":
         training_service.stop_run(db, run_id)
