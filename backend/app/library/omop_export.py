@@ -53,6 +53,24 @@ def _date_str(dt: object) -> str:
     return str(dt)
 
 
+# OMOP CDM era persistence window: occurrences more than 30 days apart
+# start a new condition/drug/dose era.
+ERA_PERSISTENCE_DAYS = 30
+
+
+def _era_spans(dates: List[str]) -> List[Tuple[str, str]]:
+    """Collapse YYYY-MM-DD dates into (start, end) eras, 30-day window."""
+    spans: List[Tuple[str, str]] = []
+    for d in sorted(d for d in dates if d):
+        if spans:
+            gap = date.fromisoformat(d[:10]) - date.fromisoformat(spans[-1][1][:10])
+            if gap.days <= ERA_PERSISTENCE_DAYS:
+                spans[-1] = (spans[-1][0], d)
+                continue
+        spans.append((d, d))
+    return spans or [("", "")]
+
+
 def _query_export_rows(
     db: Session,
     dataset_id: int,
@@ -444,13 +462,9 @@ def build_omop_cdm_zip(
         era_rows = []
         era_id = 0
         for (pid, cid), dates in era_groups.items():
-            non_empty = sorted([d for d in dates if d])
-            era_id += 1
-            era_rows.append([
-                era_id, pid, cid,
-                non_empty[0] if non_empty else "",
-                non_empty[-1] if non_empty else "",
-            ])
+            for start, end in _era_spans(dates):
+                era_id += 1
+                era_rows.append([era_id, pid, cid, start, end])
         csvs["condition_era.csv"] = _write_csv(
             era_rows,
             ["condition_era_id", "person_id", "condition_concept_id",
@@ -471,19 +485,11 @@ def build_omop_cdm_zip(
         era_id = 0
         dose_id = 0
         for (pid, cid), dates in drug_era_groups.items():
-            non_empty = sorted([d for d in dates if d])
-            era_id += 1
-            era_rows.append([
-                era_id, pid, cid,
-                non_empty[0] if non_empty else "",
-                non_empty[-1] if non_empty else "",
-            ])
-            dose_id += 1
-            dose_rows.append([
-                dose_id, pid, cid, "",
-                non_empty[0] if non_empty else "",
-                non_empty[-1] if non_empty else "",
-            ])
+            for start, end in _era_spans(dates):
+                era_id += 1
+                era_rows.append([era_id, pid, cid, start, end])
+                dose_id += 1
+                dose_rows.append([dose_id, pid, cid, "", start, end])
         csvs["drug_era.csv"] = _write_csv(
             era_rows,
             ["drug_era_id", "person_id", "drug_concept_id",
